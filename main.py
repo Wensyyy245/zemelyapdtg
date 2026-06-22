@@ -21,7 +21,7 @@ from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 # ========================= НАСТРОЙКИ =========================
 
 TOKEN = "8766874600:AAEgeJveXfh95zH23GVlaHnOLuHAt5hpJUw"  # ← Не забудь обновить токен!
-ADMIN_ID = 8603534638  # ← ЗАМЕНИ НА СВОЙ ТЕЛЕГРАМ ID
+ADMIN_ID = 8603534638  # ← ПОСТАВЬ СВОЙ ТЕЛЕГРАМ ID СЮДА!
 
 CHANNELS = [
     ("@zemelya_new", "Канал 1"),
@@ -98,13 +98,18 @@ async def ban_middleware(handler, event, data):
 
 # ========================= КЛАВИАТУРЫ =========================
 
-def main_menu():
+def main_menu(user_id: int):
     kb = InlineKeyboardBuilder()
     kb.button(text="📺 Смотреть видео", callback_data="watch")
     kb.button(text="🛒 Магазин", callback_data="shop")
     kb.button(text="🎟 Промокоды", callback_data="promo_menu")
     kb.button(text="👥 Рефералы", callback_data="referral")
     kb.button(text="🛠 Техподдержка", callback_data="support")
+    
+    # Кнопка динамически добавляется только для админа
+    if user_id == ADMIN_ID:
+        kb.button(text="⚙️ Админ-панель", callback_data="admin_enter")
+        
     kb.adjust(1)
     return kb.as_markup()
 
@@ -123,7 +128,7 @@ def admin_menu():
     kb.button(text="📊 Статистика", callback_data="admin_stats")
     kb.button(text="📢 Рассылка", callback_data="admin_mail")
     kb.button(text="👤 Управление юзером", callback_data="admin_user")
-    kb.button(text="◀️ Выйти", callback_data="back_main")
+    kb.button(text="◀️ Назад в меню", callback_data="back_main")
     kb.adjust(1)
     return kb.as_markup()
 
@@ -166,10 +171,19 @@ async def add_diamonds(user_id: int, amount: int):
 # ========================= АДМИН ПАНЕЛЬ =========================
 
 @router.message(Command("admin"))
-async def admin_panel(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return
+async def admin_panel_cmd(message: Message):
+    if message.from_user.id != ADMIN_ID: return
     await message.answer("🛠 Добро пожаловать в панель администратора:", reply_markup=admin_menu())
+
+@router.callback_query(F.data == "admin_enter")
+async def admin_enter_cb(callback: CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        try: await callback.answer("❌ Нет прав", show_alert=True)
+        except Exception: pass
+        return
+    await callback.message.edit_text("🛠 Панель администратора:", reply_markup=admin_menu())
+    try: await callback.answer()
+    except Exception: pass
 
 @router.callback_query(F.data == "admin_stats")
 async def admin_stats(callback: CallbackQuery):
@@ -363,7 +377,7 @@ async def process_promo_uses(message: Message, state: FSMContext):
         f"💎 Награда: {reward} за активацию\n"
         f"👥 Кол-во активаций: {uses}\n"
         f"💸 Списано с баланса: {total_cost} алмазов.",
-        reply_markup=main_menu()
+        reply_markup=main_menu(user_id)
     )
     await state.clear()
 
@@ -382,19 +396,19 @@ async def process_promo_activate(message: Message, state: FSMContext):
         
     if not row:
         await state.clear()
-        return await message.answer("❌ Такого промокода не существует или он истек.", reply_markup=main_menu())
+        return await message.answer("❌ Такого промокода не существует или он истек.", reply_markup=main_menu(user_id))
         
     creator_id, reward, uses_left = row
     
     if creator_id == user_id:
         await state.clear()
-        return await message.answer("❌ Вы не можете активировать собственный промокод.", reply_markup=main_menu())
+        return await message.answer("❌ Вы не можете активировать собственный промокод.", reply_markup=main_menu(user_id))
         
     if uses_left <= 0:
         await db.execute("DELETE FROM promo_codes WHERE code = ?", (code,))
         await db.commit()
         await state.clear()
-        return await message.answer("❌ У этого промокода закончились активации.", reply_markup=main_menu())
+        return await message.answer("❌ У этого промокода закончились активации.", reply_markup=main_menu(user_id))
         
     new_uses = uses_left - 1
     if new_uses == 0:
@@ -405,7 +419,7 @@ async def process_promo_activate(message: Message, state: FSMContext):
     await add_diamonds(user_id, reward)
     await db.commit()
     
-    await message.answer(f"🎉 Промокод успешно активирован! +<b>{reward}</b> 💎 добавлено на баланс.", reply_markup=main_menu())
+    await message.answer(f"🎉 Промокод успешно активирован! +<b>{reward}</b> 💎 добавлено на баланс.", reply_markup=main_menu(user_id))
     await state.clear()
 
 # ========================= СТАНДАРТНЫЕ ОБРАБОТЧИКИ =========================
@@ -425,7 +439,7 @@ async def start(message: Message, bot: Bot):
                     try:
                         await bot.send_message(referrer_id, "🎉 Новый реферал! +4 алмаза")
                     except TelegramForbiddenError:
-                        pass  # Игнорируем ошибку, если реферер заблокировал бота
+                        pass
                     except Exception:
                         pass
 
@@ -441,14 +455,15 @@ async def start(message: Message, bot: Bot):
     diamonds = await get_user_diamonds(user_id)
     await message.answer(
         f"Добро пожаловать! 💎\n\nНа балансе: <b>{diamonds}</b> алмазов",
-        reply_markup=main_menu()
+        reply_markup=main_menu(user_id)
     )
 
 @router.callback_query(F.data == "check_sub")
 async def check_sub(callback: CallbackQuery, bot: Bot):
+    user_id = callback.from_user.id
     try:
-        if await check_subscription(callback.from_user.id, bot):
-            await callback.message.edit_text("✅ Подписка подтверждена!", reply_markup=main_menu())
+        if await check_subscription(user_id, bot):
+            await callback.message.edit_text("✅ Подписка подтверждена!", reply_markup=main_menu(user_id))
         else:
             await callback.answer("❌ Ты не подписался на все каналы!", show_alert=True)
     except (TelegramBadRequest, TelegramForbiddenError):
@@ -545,9 +560,10 @@ async def successful_payment(message: Message):
 
 @router.callback_query(F.data.in_({"back_main", "referral", "support"}))
 async def menu_handlers(callback: CallbackQuery, bot: Bot):
+    user_id = callback.from_user.id
     if callback.data == "referral":
         me = await bot.get_me()
-        link = f"https://t.me/{me.username}?start={callback.from_user.id}"
+        link = f"https://t.me/{me.username}?start={user_id}"
         text = f"👥 <b>Твоя реферальная ссылка:</b>\n\n<code>{link}</code>\n\nЗа каждого подписавшегося реферала — <b>+4 алмаза</b>"
     elif callback.data == "support":
         text = "🛠 Техподдержка: @твой_юзернейм"
@@ -556,7 +572,7 @@ async def menu_handlers(callback: CallbackQuery, bot: Bot):
 
     await callback.message.edit_text(
         text, 
-        reply_markup=main_menu() if callback.data not in ["referral", "support"] else None
+        reply_markup=main_menu(user_id) if callback.data not in ["referral", "support"] else None
     )
     try: await callback.answer()
     except (TelegramBadRequest, TelegramForbiddenError): pass
