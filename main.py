@@ -7,9 +7,10 @@ import aiosqlite
 import aiogram.client.session.aiohttp
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
-from aiogram.client.telegram import TelegramAPIServer
 from aiogram.enums import ParseMode
 from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup,
     InlineKeyboardButton, FSInputFile, PreCheckoutQuery
@@ -19,17 +20,28 @@ from aiogram.exceptions import TelegramBadRequest
 
 # ========================= НАСТРОЙКИ =========================
 
-# ⚠️ ВНИМАНИЕ: Обязательно зайди в @BotFather, нажми /revoke и получи НОВЫЙ токен.
-# Этот токен уже «засвечен» в интернете, его могут украсть злоумышленники!
-TOKEN = "8766874600:AAEgeJveXfh95zH23GVlaHnOLuHAt5hpJUw"  
+TOKEN = "8766874600:AAEgeJveXfh95zH23GVlaHnOLuHAt5hpJUw"  # ← Не забудь обновить токен!
+ADMIN_ID = 123456789  # ← ЗАМЕНИ НА СВОЙ ТЕЛЕГРАМ ID (чтобы зайти в админку)
 
-# Каналы для обязательной подписки
 CHANNELS = [
     ("@zemelya_new", "Канал 1"),
 ]
 
 MEDIA_DIR = Path("media")
 MEDIA_DIR.mkdir(exist_ok=True)
+
+# ========================= СОСТОЯНИЯ (FSM) =========================
+
+class AdminStates(StatesGroup):
+    mailing_text = State()
+    user_manage_id = State()
+    change_balance = State()
+
+class PromoStates(StatesGroup):
+    create_code = State()
+    create_reward = State()
+    create_uses = State()
+    activate_code = State()
 
 # ========================= БАЗА ДАННЫХ =========================
 
@@ -38,11 +50,13 @@ db = None
 async def init_db():
     global db
     db = await aiosqlite.connect("bot.db")
+    # Добавили поле is_banned (0 - ок, 1 - забанен)
     await db.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
             diamonds INTEGER DEFAULT 8,
-            referred_by INTEGER
+            referred_by INTEGER,
+            is_banned INTEGER DEFAULT 0
         )
     """)
     await db.execute("""
@@ -53,7 +67,33 @@ async def init_db():
             delete_at TEXT
         )
     """)
+    # Таблица промокодов
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS promo_codes (
+            code TEXT PRIMARY KEY,
+            creator_id INTEGER,
+            reward INTEGER,
+            uses_left INTEGER
+        )
+    """)
     await db.commit()
+
+# ========================= МИДЛВАРЬ ДЛЯ БАНА =========================
+
+router = Router()
+
+@router.message.outer_middleware()
+@router.callback_query.outer_middleware()
+async def ban_middleware(handler, event, data):
+    user = data.get("event_from_user")
+    if user:
+        async with db.execute("SELECT is_banned FROM users WHERE user_id = ?", (user.id,)) as cur:
+            row = await cur.fetchone()
+            if row and row[0] == 1:
+                if isinstance(event, CallbackQuery):
+                    await event.answer("❌ Вы заблокированы в этом боте!", show_alert=True)
+                return  # Игнорируем апдейт, бот ничего не ответит
+    return await handler(event, data)
 
 # ========================= КЛАВИАТУРЫ =========================
 
@@ -61,6 +101,7 @@ def main_menu():
     kb = InlineKeyboardBuilder()
     kb.button(text="📺 Смотреть видео", callback_data="watch")
     kb.button(text="🛒 Магазин", callback_data="shop")
+    kb.button(text="🎟 Промокоды", callback_data="promo_menu")
     kb.button(text="👥 Рефералы", callback_data="referral")
     kb.button(text="🛠 Техподдержка", callback_data="support")
     kb.adjust(1)
@@ -72,6 +113,23 @@ def shop_menu():
     kb.button(text="250 алмазов — 95 ⭐", callback_data="buy_250")
     kb.button(text="500 алмазов — 150 ⭐", callback_data="buy_500")
     kb.button(text="💎 Другое количество", callback_data="buy_custom")
+    kb.button(text="◀️ Назад", callback_data="back_main")
+    kb.adjust(1)
+    return kb.as_markup()
+
+def admin_menu():
+    kb = InlineKeyboardBuilder()
+    kb.button(text="📊 Статистика", callback_data="admin_stats")
+    kb.button(text="📢 Рассылка", callback_data="admin_mail")
+    kb.button(text="👤 Управление юзером", callback_data="admin_user")
+    kb.button(text="◀️ Выйти", callback_data="back_main")
+    kb.adjust(1)
+    return kb.as_markup()
+
+def promo_menu_kb():
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✨ Активировать промокод", callback_data="promo_activate")
+    kb.button(text="➕ Создать промокод", callback_data="promo_create")
     kb.button(text="◀️ Назад", callback_data="back_main")
     kb.adjust(1)
     return kb.as_markup()
@@ -104,16 +162,262 @@ async def add_diamonds(user_id: int, amount: int):
     )
     await db.commit()
 
-# ========================= ОБРАБОТЧИКИ =========================
+# ========================= АДМИН ПАНЕЛЬ =========================
 
-router = Router()
+@router.message(Command("admin"))
+async def admin_panel(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    await message.answer("🛠 Добро пожаловать в панель администратора:", reply_markup=admin_menu())
+
+@router.callback_query(F.data == "admin_stats")
+async def admin_stats(callback: CallbackQuery):
+    if callback.from_user.id != ADMIN_ID: return
+    
+    async with db.execute("SELECT COUNT(*), SUM(diamonds) FROM users") as cur:
+        total_users, total_diamonds = await cur.fetchone()
+    async with db.execute("SELECT COUNT(*) FROM promo_codes") as cur:
+        total_promos = (await cur.fetchone())[0]
+        
+    text = (
+        f"📊 <b>Статистика бота:</b>\n\n"
+        f"👥 Всего пользователей: <code>{total_users}</code>\n"
+        f"💎 Алмазов в системе: <code>{total_diamonds or 0}</code>\n"
+        f"🎟 Активных промокодов: <code>{total_promos}</code>"
+    )
+    await callback.message.edit_text(text, reply_markup=admin_menu())
+
+@router.callback_query(F.data == "admin_mail")
+async def admin_mail(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID: return
+    await callback.message.edit_text("📢 Введите текст для рассылки (поддерживается HTML):")
+    await state.set_state(AdminStates.mailing_text)
+
+@router.message(AdminStates.mailing_text)
+async def process_mailing(message: Message, state: FSMContext, bot: Bot):
+    if message.from_user.id != ADMIN_ID: return
+    await state.clear()
+    
+    await message.answer("🚀 Рассылка запущена...")
+    async with db.execute("SELECT user_id FROM users") as cur:
+        rows = await cur.fetchall()
+        
+    count = 0
+    for row in rows:
+        try:
+            await bot.send_message(chat_id=row[0], text=message.text)
+            count += 1
+            await asyncio.sleep(0.05) # Защита от флуда Telegram
+        except Exception:
+            pass
+            
+    await message.answer(f"✅ Рассылка завершена. Успешно отправлено: {count} пользователям.")
+
+@router.callback_query(F.data == "admin_user")
+async def admin_user(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID: return
+    await callback.message.edit_text("👤 Введите Telegram ID пользователя для управления:")
+    await state.set_state(AdminStates.user_manage_id)
+
+@router.message(AdminStates.user_manage_id)
+async def process_user_manage(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID: return
+    if not message.text.isdigit():
+        return await message.answer("❌ ID должен состоять только из цифр. Попробуйте еще раз.")
+        
+    target_id = int(message.text)
+    async with db.execute("SELECT diamonds, is_banned FROM users WHERE user_id = ?", (target_id,)) as cur:
+        row = await cur.fetchone()
+        
+    if not row:
+        await state.clear()
+        return await message.answer("❌ Пользователь не найден в базе данных.")
+        
+    await state.update_data(target_id=target_id)
+    diamonds, is_banned = row
+    
+    kb = InlineKeyboardBuilder()
+    kb.button(text="💰 Изменить баланс", callback_data="adm_change_bal")
+    kb.button(text="🔓 Разбанить" if is_banned else "🔒 Забанить", callback_data="adm_toggle_ban")
+    kb.button(text=" Cancel", callback_data="back_admin")
+    kb.adjust(1)
+    
+    status = "ЗАБАНЕН" if is_banned else "Активен"
+    await message.answer(
+        f"👤 Пользователь: <code>{target_id}</code>\n"
+        f"💎 Баланс: <b>{diamonds}</b>\n"
+        f"🚦 Статус: <b>{status}</b>", 
+        reply_markup=kb.as_markup()
+    )
+
+@router.callback_query(F.data == "adm_toggle_ban")
+async def adm_toggle_ban(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID: return
+    data = await state.get_data()
+    target_id = data.get("target_id")
+    
+    async with db.execute("SELECT is_banned FROM users WHERE user_id = ?", (target_id,)) as cur:
+        is_banned = (await cur.fetchone())[0]
+        
+    new_ban = 0 if is_banned else 1
+    await db.execute("UPDATE users SET is_banned = ? WHERE user_id = ?", (new_ban, target_id))
+    await db.commit()
+    
+    await callback.answer("✅ Статус бана изменен!")
+    await state.clear()
+    await callback.message.edit_text("🛠 Операция успешна. Возвращаюсь в меню.", reply_markup=admin_menu())
+
+@router.callback_query(F.data == "adm_change_bal")
+async def adm_change_bal(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID: return
+    await callback.message.edit_text("💰 Введите число алмазов (например: 50 для начисления, или -50 для списания):")
+    await state.set_state(AdminStates.change_balance)
+
+@router.message(AdminStates.change_balance)
+async def process_change_balance(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID: return
+    try:
+        amount = int(message.text)
+    except ValueError:
+        return await message.answer("❌ Введите корректное число.")
+        
+    data = await state.get_data()
+    target_id = data.get("target_id")
+    
+    await add_diamonds(target_id, amount)
+    await message.answer(f"✅ Баланс пользователя {target_id} изменен на {amount} алмазов.")
+    await state.clear()
+
+@router.callback_query(F.data == "back_admin")
+async def back_admin(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.edit_text("🛠 Панель администратора:", reply_markup=admin_menu())
+
+
+# ========================= КАТЕГОРИЯ ПРОМОКОДОВ =========================
+
+@router.callback_query(F.data == "promo_menu")
+async def promo_menu(callback: CallbackQuery):
+    await callback.message.edit_text(
+        "🎟 <b>Система промокодов:</b>\n\nВы можете активировать чужой промокод или создать свой собственный, выделив алмазы из личного баланса.",
+        reply_markup=promo_menu_kb()
+    )
+
+@router.callback_query(F.data == "promo_create")
+async def promo_create(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_text("✨ Придумайте и напишите текст промокода (английские буквы/цифры):")
+    await state.set_state(PromoStates.create_code)
+
+@router.message(PromoStates.create_code)
+async def process_promo_code(message: Message, state: FSMContext):
+    code = message.text.strip().upper()
+    if not code.isalnum():
+        return await message.answer("❌ Промокод должен состоять только из букв и цифр.")
+        
+    async with db.execute("SELECT 1 FROM promo_codes WHERE code = ?", (code,)) as cur:
+        if await cur.fetchone():
+            return await message.answer("❌ Такой промокод уже существует. Придумайте другой.")
+            
+    await state.update_data(code=code)
+    await message.answer("💎 Сколько алмазов получит активировавший (награда за 1 активацию)?")
+    await state.set_state(PromoStates.create_reward)
+
+@router.message(PromoStates.create_reward)
+async def process_promo_reward(message: Message, state: FSMContext):
+    if not message.text.isdigit() or int(message.text) < 1:
+        return await message.answer("❌ Введите целое число больше нуля.")
+        
+    await state.update_data(reward=int(message.text))
+    await message.answer("👥 Сколько человек смогут активировать этот промокод?")
+    await state.set_state(PromoStates.create_uses)
+
+@router.message(PromoStates.create_uses)
+async def process_promo_uses(message: Message, state: FSMContext):
+    if not message.text.isdigit() or int(message.text) < 1:
+        return await message.answer("❌ Введите целое число больше нуля.")
+        
+    uses = int(message.text)
+    data = await state.get_data()
+    code = data['code']
+    reward = data['reward']
+    
+    total_cost = reward * uses
+    user_id = message.from_user.id
+    user_diamonds = await get_user_diamonds(user_id)
+    
+    if user_diamonds < total_cost:
+        await state.clear()
+        return await message.answer(f"❌ Недостаточно алмазов. Для создания нужно <b>{total_cost}</b> 💎, у вас: <b>{user_diamonds}</b>")
+        
+    # Списываем баланс у создателя и регистрируем промокод
+    await db.execute("UPDATE users SET diamonds = diamonds - ? WHERE user_id = ?", (total_cost, user_id))
+    await db.execute(
+        "INSERT INTO promo_codes (code, creator_id, reward, uses_left) VALUES (?, ?, ?, ?)",
+        (code, user_id, reward, uses)
+    )
+    await db.commit()
+    
+    await message.answer(
+        f"✅ Промокод успешно создан!\n\n"
+        f"🎫 Код: <code>{code}</code>\n"
+        f"💎 Награда: {reward} за активацию\n"
+        f"👥 Кол-во активаций: {uses}\n"
+        f" Списано с баланса: {total_cost} алмазов.",
+        reply_markup=main_menu()
+    )
+    await state.clear()
+
+@router.callback_query(F.data == "promo_activate")
+async def promo_activate(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_text("📥 Введите промокод для активации:")
+    await state.set_state(PromoStates.activate_code)
+
+@router.message(PromoStates.activate_code)
+async def process_promo_activate(message: Message, state: FSMContext):
+    code = message.text.strip().upper()
+    user_id = message.from_user.id
+    
+    async with db.execute("SELECT creator_id, reward, uses_left FROM promo_codes WHERE code = ?", (code,)) as cur:
+        row = await cur.fetchone()
+        
+    if not row:
+        await state.clear()
+        return await message.answer("❌ Такого промокода не существует или он истек.", reply_markup=main_menu())
+        
+    creator_id, reward, uses_left = row
+    
+    if creator_id == user_id:
+        await state.clear()
+        return await message.answer("❌ Вы не можете активировать собственный промокод.", reply_markup=main_menu())
+        
+    # Проверка: не было ли изменений лимита активаций
+    if uses_left <= 0:
+        await db.execute("DELETE FROM promo_codes WHERE code = ?", (code,))
+        await db.commit()
+        await state.clear()
+        return await message.answer("❌ У этого промокода закончились активации.", reply_markup=main_menu())
+        
+    # Начисляем награду и уменьшаем количество использований
+    new_uses = uses_left - 1
+    if new_uses == 0:
+        await db.execute("DELETE FROM promo_codes WHERE code = ?", (code,))
+    else:
+        await db.execute("UPDATE promo_codes SET uses_left = ? WHERE code = ?", (new_uses, code))
+        
+    await add_diamonds(user_id, reward)
+    await db.commit()
+    
+    await message.answer(f"🎉 Промокод успешно активирован! +<b>{reward}</b> 💎 добавлено на баланс.", reply_markup=main_menu())
+    await state.clear()
+
+
+# ========================= СТАНДАРТНЫЕ ОБРАБОТЧИКИ =========================
 
 @router.message(Command("start"))
 async def start(message: Message, bot: Bot):
     user_id = message.from_user.id
     args = message.text.split()
 
-    # Реферальная система
     if len(args) > 1 and args[1].isdigit():
         referrer_id = int(args[1])
         if referrer_id != user_id:
@@ -145,10 +449,7 @@ async def start(message: Message, bot: Bot):
 @router.callback_query(F.data == "check_sub")
 async def check_sub(callback: CallbackQuery, bot: Bot):
     if await check_subscription(callback.from_user.id, bot):
-        await callback.message.edit_text(
-            "✅ Подписка подтверждена!", 
-            reply_markup=main_menu()
-        )
+        await callback.message.edit_text("✅ Подписка подтверждена!", reply_markup=main_menu())
     else:
         try:
             await callback.answer("❌ Ты не подписался на все каналы!", show_alert=True)
@@ -162,19 +463,14 @@ async def watch(callback: CallbackQuery, bot: Bot):
     diamonds = await get_user_diamonds(user_id)
 
     if diamonds < 6:
-        try:
-            return await callback.answer("❌ Недостаточно алмазов (нужно 6)", show_alert=True)
-        except TelegramBadRequest:
-            return
+        try: return await callback.answer("❌ Недостаточно алмазов (нужно 6)", show_alert=True)
+        except TelegramBadRequest: return
 
     videos = list(MEDIA_DIR.glob("*.mp4")) + list(MEDIA_DIR.glob("*.MOV")) + list(MEDIA_DIR.glob("*.avi"))
     if not videos:
-        try:
-            return await callback.answer("❌ Нет видео в папке media", show_alert=True)
-        except TelegramBadRequest:
-            return
+        try: return await callback.answer("❌ Нет видео в папке media", show_alert=True)
+        except TelegramBadRequest: return
 
-    # Списываем баланс только при наличии файлов
     await db.execute("UPDATE users SET diamonds = diamonds - 6 WHERE user_id = ?", (user_id,))
     await db.commit()
 
@@ -192,20 +488,13 @@ async def watch(callback: CallbackQuery, bot: Bot):
     )
     await db.commit()
 
-    try:
-        await callback.answer("✅ Видео отправлено!")
-    except TelegramBadRequest:
-        pass
+    try: await callback.answer("✅ Видео отправлено!")
+    except TelegramBadRequest: pass
 
 
 @router.callback_query(F.data == "shop")
 async def shop(callback: CallbackQuery):
     await callback.message.edit_text("🛒 Магазин алмазов:", reply_markup=shop_menu())
-    try:
-        await callback.answer()
-    except TelegramBadRequest:
-        pass
-
 
 @router.callback_query(F.data.startswith("buy_"))
 async def buy_diamonds(callback: CallbackQuery, bot: Bot):
@@ -228,10 +517,8 @@ async def buy_diamonds(callback: CallbackQuery, bot: Bot):
             "Напиши количество алмазов (1 алмаз = 1 ⭐):",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Отмена", callback_data="shop")]])
         )
-    try:
-        await callback.answer()
-    except TelegramBadRequest:
-        pass
+    try: await callback.answer()
+    except TelegramBadRequest: pass
 
 
 @router.message(F.text.isdigit())
@@ -279,40 +566,28 @@ async def menu_handlers(callback: CallbackQuery, bot: Bot):
         text, 
         reply_markup=main_menu() if callback.data not in ["referral", "support"] else None
     )
-    try:
-        await callback.answer()
-    except TelegramBadRequest:
-        pass
+    try: await callback.answer()
+    except TelegramBadRequest: pass
 
 
 # ========================= ЗАПУСК =========================
 
 async def delete_old_videos(bot: Bot):
     while True:
-        await asyncio.sleep(30)  # Проверка каждые 30 секунд
+        await asyncio.sleep(30)
         try:
             now = datetime.now().isoformat()
-            
-            # Сначала безопасно выбираем все старые видео
             async with db.execute("SELECT message_id, chat_id, file_id FROM videos WHERE delete_at <= ?", (now,)) as cur:
                 rows = await cur.fetchall()
             
-            if not rows:
-                continue
+            if not rows: continue
 
-            # Удаляем сообщения в Telegram и записи из базы
             for message_id, chat_id, file_id in rows:
-                try:
-                    await bot.delete_message(chat_id, message_id)
-                except Exception:
-                    pass  # Если пользователь уже сам удалил сообщение
+                try: await bot.delete_message(chat_id, message_id)
+                except Exception: pass
                 
-                await db.execute(
-                    "DELETE FROM videos WHERE message_id = ? AND chat_id = ?", 
-                    (message_id, chat_id)
-                )
-            await db.commit()  # Коммитим всё разом, база не заблокируется
-            
+                await db.execute("DELETE FROM videos WHERE message_id = ? AND chat_id = ?", (message_id, chat_id))
+            await db.commit()
         except Exception as e:
             print(f"Ошибка в таске очистки видео: {e}")
 
@@ -320,7 +595,6 @@ async def delete_old_videos(bot: Bot):
 async def main():
     await init_db()
     
-    # Возвращаемся к стандартному серверу Telegram
     bot = Bot(
         token=TOKEN,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML)
@@ -331,14 +605,9 @@ async def main():
 
     asyncio.create_task(delete_old_videos(bot))
 
-    print("✅ Бот запущен! Ошибки сети будут обрабатываться автоматически.")
-    
-    # Режим ожидания (polling) с игнорированием сетевых ошибок, чтобы бот не падал
-    await dp.start_polling(
-        bot, 
-        handle_signals=False, 
-        close_bot_session=True
-    )
+    print("✅ Бот успешно запущен на хостинге!")
+    await dp.start_polling(bot, handle_signals=False, close_bot_session=True)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
