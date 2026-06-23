@@ -19,7 +19,7 @@ from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 
 # ========================= НАСТРОЙКИ =========================
 
-TOKEN = "8766874600:AAEgeJveXfh95zH23GVlaHnOLuHAt5hpJUw"
+TOKEN = "8891336382:AAHcSyCx2bngHmvSrM51fh5SdTsscN8EX3w"
 ADMIN_ID = 8636334761
 
 CHANNELS = [
