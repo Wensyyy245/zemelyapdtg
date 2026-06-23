@@ -23,8 +23,7 @@ TOKEN = "8818300434:AAFKD1scm-1y3IuzNaZcQs147YVDhPyaJPY"
 ADMIN_ID = 8502341995
 
 CHANNELS = [
-    ("+XtrR9ohBifY1MGI6", "Канал 1"),
-    ("@zemlyanika_rezerv", "Канал 2"),
+    ("@zemlyanika_rezerv", "Канал 1"),
 ]
 
 # Перенос всех путей в папку data
