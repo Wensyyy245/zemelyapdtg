@@ -20,8 +20,8 @@ from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 
 # ========================= НАСТРОЙКИ =========================
 
-TOKEN = "8766874600:AAEgeJveXfh95zH23GVlaHnOLuHAt5hpJUw"  # ← Не забудь обновить токен!
-ADMIN_ID = 123456789  # ← ЗАМЕНИ НА СВОЙ ТЕЛЕГРАМ ID
+TOKEN = "8891336382:AAHcSyCx2bngHmvSrM51fh5SdTsscN8EX3w"  # ← Не забудь обновить токен!
+ADMIN_ID = 8636334761  # ← ЗАМЕНИ НА СВОЙ ТЕЛЕГРАМ ID
 
 CHANNELS = [
     ("@zemelya_new", "Канал 1"),
