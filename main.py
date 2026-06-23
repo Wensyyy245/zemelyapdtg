@@ -24,7 +24,7 @@ TOKEN = "8891336382:AAHcSyCx2bngHmvSrM51fh5SdTsscN8EX3w"  # ← Не забуд�
 ADMIN_ID = 8636334761  # ← ЗАМЕНИ НА СВОЙ ТЕЛЕГРАМ ID
 
 CHANNELS = [
-    ("@zemelya_new", "Канал 1"),
+    ("@zemelyadpbot", "Канал 1"),
 ]
 
 MEDIA_DIR = Path("media")
