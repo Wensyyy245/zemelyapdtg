@@ -19,8 +19,8 @@ from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 
 # ========================= НАСТРОЙКИ =========================
 
-TOKEN = "8891336382:AAHcSyCx2bngHmvSrM51fh5SdTsscN8EX3w"
-ADMIN_ID = 8636334761
+TOKEN = "8818300434:AAFKD1scm-1y3IuzNaZcQs147YVDhPyaJPY"
+ADMIN_ID = 8502341995
 
 CHANNELS = [
     ("@zemelyadpbot", "Канал 1"),
