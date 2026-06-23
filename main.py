@@ -167,9 +167,10 @@ async def get_user_diamonds(user_id: int, first_name: str = "Пользоват�
     async with db.execute("SELECT diamonds FROM users WHERE user_id = ?", (user_id,)) as cur:
         row = await cur.fetchone()
         if not row:
+            # ИСПРАВЛЕНО: передаем ровно 2 параметра (user_id, first_name)
             await db.execute(
                 "INSERT INTO users (user_id, first_name, diamonds) VALUES (?, ?, 8)", 
-                (user_id, first_name, id)
+                (user_id, first_name)
             )
             await db.commit()
             return 8
