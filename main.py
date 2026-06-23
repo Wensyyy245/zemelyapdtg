@@ -4,7 +4,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import aiosqlite
-import aiogram.client.session.aiohttp
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -20,15 +19,23 @@ from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 
 # ========================= НАСТРОЙКИ =========================
 
-TOKEN = "8891336382:AAHcSyCx2bngHmvSrM51fh5SdTsscN8EX3w"  # ← Не забудь обновить токен!
-ADMIN_ID = 8636334761  # ← ЗАМЕНИ НА СВОЙ ТЕЛЕГРАМ ID
+TOKEN = "8766874600:AAEgeJveXfh95zH23GVlaHnOLuHAt5hpJUw"
+ADMIN_ID = 8636334761
 
 CHANNELS = [
     ("@zemelyadpbot", "Канал 1"),
 ]
 
-MEDIA_DIR = Path("media")
+# Перенос всех путей в папку data
+DATA_DIR = Path("data")
+MEDIA_DIR = DATA_DIR / "media"
+PHOTO_DIR = DATA_DIR / "photo"
+
+DATA_DIR.mkdir(exist_ok=True)
 MEDIA_DIR.mkdir(exist_ok=True)
+PHOTO_DIR.mkdir(exist_ok=True)
+
+DB_PATH = DATA_DIR / "bot.db"
 
 # ========================= СОСТОЯНИЯ (FSM) =========================
 
@@ -49,10 +56,12 @@ db = None
 
 async def init_db():
     global db
-    db = await aiosqlite.connect("bot.db")
+    db = await aiosqlite.connect(DB_PATH)
+    # Добавлено поле first_name для хранения имени (для топ-листов)
     await db.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
+            first_name TEXT DEFAULT 'Пользователь',
             diamonds INTEGER DEFAULT 8,
             referred_by INTEGER,
             is_banned INTEGER DEFAULT 0
@@ -98,13 +107,19 @@ async def ban_middleware(handler, event, data):
 
 # ========================= КЛАВИАТУРЫ =========================
 
-def main_menu():
+def main_menu(user_id: int):
     kb = InlineKeyboardBuilder()
-    kb.button(text="📺 Смотреть видео", callback_data="watch")
+    kb.button(text="📺 Смотреть видео (6 💎)", callback_data="watch")
+    kb.button(text="📸 Посмотреть фото (3 💎)", callback_data="watch_photo")
     kb.button(text="🛒 Магазин", callback_data="shop")
     kb.button(text="🎟 Промокоды", callback_data="promo_menu")
+    kb.button(text="🏆 Таблица лидеров", callback_data="leaderboard")
     kb.button(text="👥 Рефералы", callback_data="referral")
     kb.button(text="🛠 Техподдержка", callback_data="support")
+    
+    if user_id == ADMIN_ID:
+        kb.button(text="⚙️ Admin Panel", callback_data="admin_enter")
+        
     kb.adjust(1)
     return kb.as_markup()
 
@@ -121,9 +136,10 @@ def shop_menu():
 def admin_menu():
     kb = InlineKeyboardBuilder()
     kb.button(text="📊 Статистика", callback_data="admin_stats")
+    kb.button(text="👥 Список участников", callback_data="admin_users_list")
     kb.button(text="📢 Рассылка", callback_data="admin_mail")
     kb.button(text="👤 Управление юзером", callback_data="admin_user")
-    kb.button(text="◀️ Выйти", callback_data="back_main")
+    kb.button(text="◀️ Назад в меню", callback_data="back_main")
     kb.adjust(1)
     return kb.as_markup()
 
@@ -147,13 +163,20 @@ async def check_subscription(user_id: int, bot: Bot) -> bool:
             return False
     return True
 
-async def get_user_diamonds(user_id: int) -> int:
+async def get_user_diamonds(user_id: int, first_name: str = "Пользователь") -> int:
     async with db.execute("SELECT diamonds FROM users WHERE user_id = ?", (user_id,)) as cur:
         row = await cur.fetchone()
         if not row:
-            await db.execute("INSERT INTO users (user_id, diamonds) VALUES (?, 8)", (user_id,))
+            await db.execute(
+                "INSERT INTO users (user_id, first_name, diamonds) VALUES (?, ?, 8)", 
+                (user_id, first_name, id)
+            )
             await db.commit()
             return 8
+        
+        # Обновляем имя, если оно изменилось в ТГ
+        await db.execute("UPDATE users SET first_name = ? WHERE user_id = ?", (first_name, user_id))
+        await db.commit()
         return row[0]
 
 async def add_diamonds(user_id: int, amount: int):
@@ -166,10 +189,21 @@ async def add_diamonds(user_id: int, amount: int):
 # ========================= АДМИН ПАНЕЛЬ =========================
 
 @router.message(Command("admin"))
-async def admin_panel(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return
+async def admin_panel_cmd(message: Message):
+    if message.from_user.id != ADMIN_ID: return
     await message.answer("🛠 Добро пожаловать в панель администратора:", reply_markup=admin_menu())
+
+@router.callback_query(F.data == "admin_enter")
+async def admin_enter_cb(callback: CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        try: await callback.answer("❌ Нет прав", show_alert=True)
+        except Exception: pass
+        return
+    try:
+        await callback.message.edit_text("🛠 Панель администратора:", reply_markup=admin_menu())
+        await callback.answer()
+    except TelegramBadRequest:
+        await callback.answer()
 
 @router.callback_query(F.data == "admin_stats")
 async def admin_stats(callback: CallbackQuery):
@@ -180,18 +214,53 @@ async def admin_stats(callback: CallbackQuery):
     async with db.execute("SELECT COUNT(*) FROM promo_codes") as cur:
         total_promos = (await cur.fetchone())[0]
         
+    now_time = datetime.now().strftime("%H:%M:%S")
     text = (
-        f"📊 <b>Статистика бота:</b>\n\n"
+        f"📊 <b>Статистика бота (обновлено в {now_time}):</b>\n\n"
         f"👥 Всего пользователей: <code>{total_users}</code>\n"
         f"💎 Алмазов в системе: <code>{total_diamonds or 0}</code>\n"
         f"🎟 Активных промокодов: <code>{total_promos}</code>"
     )
-    await callback.message.edit_text(text, reply_markup=admin_menu())
+    try:
+        await callback.message.edit_text(text, reply_markup=admin_menu())
+        await callback.answer()
+    except TelegramBadRequest:
+        await callback.answer("📊 Статистика уже актуальна!")
+
+@router.callback_query(F.data == "admin_users_list")
+async def admin_users_list(callback: CallbackQuery):
+    if callback.from_user.id != ADMIN_ID: return
+    
+    async with db.execute("SELECT user_id, first_name, diamonds, is_banned FROM users LIMIT 100") as cur:
+        rows = await cur.fetchall()
+        
+    if not rows:
+        return await callback.answer("База данных пуста.", show_alert=True)
+        
+    text = "👥 <b>Список участников (Топ-100):</b>\n\n"
+    for row in rows:
+        uid, name, diamonds, banned = row
+        status = " [🔒]" if banned else ""
+        text += f"▪️ <code>{uid}</code> — <b>{name}</b> ({diamonds} 💎){status}\n"
+        
+    # Кнопка возврата в админку
+    kb = InlineKeyboardBuilder()
+    kb.button(text="◀️ Назад в админку", callback_data="admin_enter")
+    
+    try:
+        await callback.message.edit_text(text, reply_markup=kb.as_markup())
+        await callback.answer()
+    except TelegramBadRequest:
+        await callback.answer()
 
 @router.callback_query(F.data == "admin_mail")
 async def admin_mail(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID: return
-    await callback.message.edit_text("📢 Введите текст для рассылки (поддерживается HTML):")
+    try:
+        await callback.message.edit_text("📢 Введите текст для рассылки (поддерживается HTML):")
+        await callback.answer()
+    except TelegramBadRequest:
+        await callback.answer()
     await state.set_state(AdminStates.mailing_text)
 
 @router.message(AdminStates.mailing_text)
@@ -217,7 +286,11 @@ async def process_mailing(message: Message, state: FSMContext, bot: Bot):
 @router.callback_query(F.data == "admin_user")
 async def admin_user(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID: return
-    await callback.message.edit_text("👤 Введите Telegram ID пользователя для управления:")
+    try:
+        await callback.message.edit_text("👤 Введите Telegram ID пользователя для управления:")
+        await callback.answer()
+    except TelegramBadRequest:
+        await callback.answer()
     await state.set_state(AdminStates.user_manage_id)
 
 @router.message(AdminStates.user_manage_id)
@@ -227,7 +300,7 @@ async def process_user_manage(message: Message, state: FSMContext):
         return await message.answer("❌ ID должен состоять только из цифр. Попробуйте еще раз.")
         
     target_id = int(message.text)
-    async with db.execute("SELECT diamonds, is_banned FROM users WHERE user_id = ?", (target_id,)) as cur:
+    async with db.execute("SELECT diamonds, is_banned, first_name FROM users WHERE user_id = ?", (target_id,)) as cur:
         row = await cur.fetchone()
         
     if not row:
@@ -235,7 +308,7 @@ async def process_user_manage(message: Message, state: FSMContext):
         return await message.answer("❌ Пользователь не найден в базе данных.")
         
     await state.update_data(target_id=target_id)
-    diamonds, is_banned = row
+    diamonds, is_banned, name = row
     
     kb = InlineKeyboardBuilder()
     kb.button(text="💰 Изменить баланс", callback_data="adm_change_bal")
@@ -245,7 +318,7 @@ async def process_user_manage(message: Message, state: FSMContext):
     
     status = "ЗАБАНЕН" if is_banned else "Активен"
     await message.answer(
-        f"👤 Пользователь: <code>{target_id}</code>\n"
+        f"👤 Пользователь: <b>{name}</b> (<code>{target_id}</code>)\n"
         f"💎 Баланс: <b>{diamonds}</b>\n"
         f"🚦 Статус: <b>{status}</b>", 
         reply_markup=kb.as_markup()
@@ -267,12 +340,19 @@ async def adm_toggle_ban(callback: CallbackQuery, state: FSMContext):
     try: await callback.answer("✅ Статус бана изменен!")
     except Exception: pass
     await state.clear()
-    await callback.message.edit_text("🛠 Операция успешна. Возвращаюсь в меню.", reply_markup=admin_menu())
+    try:
+        await callback.message.edit_text("🛠 Операция успешна. Возвращаюсь в меню.", reply_markup=admin_menu())
+    except TelegramBadRequest:
+        pass
 
 @router.callback_query(F.data == "adm_change_bal")
 async def adm_change_bal(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id != ADMIN_ID: return
-    await callback.message.edit_text("💰 Введите число алмазов (например: 50 для начисления, или -50 для списания):")
+    try:
+        await callback.message.edit_text("💰 Введите число алмазов (например: 50 для начисления, или -50 для списания):")
+        await callback.answer()
+    except TelegramBadRequest:
+        await callback.answer()
     await state.set_state(AdminStates.change_balance)
 
 @router.message(AdminStates.change_balance)
@@ -293,20 +373,72 @@ async def process_change_balance(message: Message, state: FSMContext):
 @router.callback_query(F.data == "back_admin")
 async def back_admin(callback: CallbackQuery, state: FSMContext):
     await state.clear()
-    await callback.message.edit_text("🛠 Панель администратора:", reply_markup=admin_menu())
+    try:
+        await callback.message.edit_text("🛠 Панель администратора:", reply_markup=admin_menu())
+        await callback.answer()
+    except TelegramBadRequest:
+        await callback.answer()
+
+# ========================= СИСТЕМА ЛИДЕРБОРДОВ =========================
+
+@router.callback_query(F.data == "leaderboard")
+async def leaderboard_menu(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    
+    # 1. Топ по алмазам
+    async with db.execute("SELECT first_name, diamonds FROM users ORDER BY diamonds DESC LIMIT 5") as cur:
+        top_diamonds = await cur.fetchall()
+        
+    # 2. Топ по рефералам
+    async with db.execute("""
+        SELECT u.first_name, COUNT(r.user_id) as ref_count 
+        FROM users u 
+        LEFT JOIN users r ON r.referred_by = u.user_id 
+        GROUP BY u.user_id 
+        ORDER BY ref_count DESC 
+        LIMIT 5
+    """) as cur:
+        top_referrals = await cur.fetchall()
+        
+    text = "🏆 <b>ТАБЛИЦА ЛИДЕРОВ</b> 🏆\n\n"
+    
+    text += "💎 <b>Топ по алмазам:</b>\n"
+    for i, (name, count) in enumerate(top_diamonds, 1):
+        text += f"{i}. {name} — <code>{count}</code> 💎\n"
+        
+    text += "\n👥 <b>Топ по приглашениям:</b>\n"
+    for i, (name, count) in enumerate(top_referrals, 1):
+        text += f"{i}. {name} — <code>{count}</code> реф.\n"
+        
+    kb = InlineKeyboardBuilder()
+    kb.button(text="◀️ Назад в меню", callback_data="back_main")
+    
+    try:
+        await callback.message.edit_text(text, reply_markup=kb.as_markup())
+        await callback.answer()
+    except TelegramBadRequest:
+        await callback.answer()
 
 # ========================= КАТЕГОРИЯ ПРОМОКОДОВ =========================
 
 @router.callback_query(F.data == "promo_menu")
 async def promo_menu(callback: CallbackQuery):
-    await callback.message.edit_text(
-        "🎟 <b>Система промокодов:</b>\n\nВы можете активировать чужой промокод или создать свой собственный, выделив алмазы из личного баланса.",
-        reply_markup=promo_menu_kb()
-    )
+    try:
+        await callback.message.edit_text(
+            "🎟 <b>Система промокодов:</b>\n\nВы можете активировать чужой промокод или создать свой собственный, выделив алмазы из личного баланса.",
+            reply_markup=promo_menu_kb()
+        )
+        await callback.answer()
+    except TelegramBadRequest:
+        await callback.answer()
 
 @router.callback_query(F.data == "promo_create")
 async def promo_create(callback: CallbackQuery, state: FSMContext):
-    await callback.message.edit_text("✨ Придумайте и напишите текст промокода (английские буквы/цифры):")
+    try:
+        await callback.message.edit_text("✨ Придумайте и напишите текст промокода (английские буквы/цифры):")
+        await callback.answer()
+    except TelegramBadRequest:
+        await callback.answer()
     await state.set_state(PromoStates.create_code)
 
 @router.message(PromoStates.create_code)
@@ -344,7 +476,7 @@ async def process_promo_uses(message: Message, state: FSMContext):
     
     total_cost = reward * uses
     user_id = message.from_user.id
-    user_diamonds = await get_user_diamonds(user_id)
+    user_diamonds = await get_user_diamonds(user_id, message.from_user.first_name)
     
     if user_diamonds < total_cost:
         await state.clear()
@@ -363,13 +495,17 @@ async def process_promo_uses(message: Message, state: FSMContext):
         f"💎 Награда: {reward} за активацию\n"
         f"👥 Кол-во активаций: {uses}\n"
         f"💸 Списано с баланса: {total_cost} алмазов.",
-        reply_markup=main_menu()
+        reply_markup=main_menu(user_id)
     )
     await state.clear()
 
 @router.callback_query(F.data == "promo_activate")
 async def promo_activate(callback: CallbackQuery, state: FSMContext):
-    await callback.message.edit_text("📥 Введите промокод для активации:")
+    try:
+        await callback.message.edit_text("📥 Введите промокод для активации:")
+        await callback.answer()
+    except TelegramBadRequest:
+        await callback.answer()
     await state.set_state(PromoStates.activate_code)
 
 @router.message(PromoStates.activate_code)
@@ -382,19 +518,19 @@ async def process_promo_activate(message: Message, state: FSMContext):
         
     if not row:
         await state.clear()
-        return await message.answer("❌ Такого промокода не существует или он истек.", reply_markup=main_menu())
+        return await message.answer("❌ Такого промокода не существует или он истек.", reply_markup=main_menu(user_id))
         
     creator_id, reward, uses_left = row
     
     if creator_id == user_id:
         await state.clear()
-        return await message.answer("❌ Вы не можете активировать собственный промокод.", reply_markup=main_menu())
+        return await message.answer("❌ Вы не можете активировать собственный промокод.", reply_markup=main_menu(user_id))
         
     if uses_left <= 0:
         await db.execute("DELETE FROM promo_codes WHERE code = ?", (code,))
         await db.commit()
         await state.clear()
-        return await message.answer("❌ У этого промокода закончились активации.", reply_markup=main_menu())
+        return await message.answer("❌ У этого промокода закончились активации.", reply_markup=main_menu(user_id))
         
     new_uses = uses_left - 1
     if new_uses == 0:
@@ -405,7 +541,7 @@ async def process_promo_activate(message: Message, state: FSMContext):
     await add_diamonds(user_id, reward)
     await db.commit()
     
-    await message.answer(f"🎉 Промокод успешно активирован! +<b>{reward}</b> 💎 добавлено на баланс.", reply_markup=main_menu())
+    await message.answer(f"🎉 Промокод успешно активирован! +<b>{reward}</b> 💎 добавлено на баланс.", reply_markup=main_menu(user_id))
     await state.clear()
 
 # ========================= СТАНДАРТНЫЕ ОБРАБОТЧИКИ =========================
@@ -413,6 +549,7 @@ async def process_promo_activate(message: Message, state: FSMContext):
 @router.message(Command("start"))
 async def start(message: Message, bot: Bot):
     user_id = message.from_user.id
+    name = message.from_user.first_name
     args = message.text.split()
 
     if len(args) > 1 and args[1].isdigit():
@@ -425,30 +562,33 @@ async def start(message: Message, bot: Bot):
                     try:
                         await bot.send_message(referrer_id, "🎉 Новый реферал! +4 алмаза")
                     except TelegramForbiddenError:
-                        pass  # Игнорируем ошибку, если реферер заблокировал бота
+                        pass
                     except Exception:
                         pass
 
     if not await check_subscription(user_id, bot):
         kb = InlineKeyboardBuilder()
-        for channel, name in CHANNELS:
-            kb.button(text=name, url=f"https://t.me/{channel[1:]}")
+        for channel, name_ch in CHANNELS:
+            kb.button(text=name_ch, url=f"https://t.me/{channel[1:]}")
         kb.button(text="✅ Я подписался", callback_data="check_sub")
         kb.adjust(1)
         await message.answer("👋 Для работы бота подпишись на каналы:", reply_markup=kb.as_markup())
         return
 
-    diamonds = await get_user_diamonds(user_id)
+    diamonds = await get_user_diamonds(user_id, name)
     await message.answer(
         f"Добро пожаловать! 💎\n\nНа балансе: <b>{diamonds}</b> алмазов",
-        reply_markup=main_menu()
+        reply_markup=main_menu(user_id)
     )
 
 @router.callback_query(F.data == "check_sub")
 async def check_sub(callback: CallbackQuery, bot: Bot):
+    user_id = callback.from_user.id
+    name = callback.from_user.first_name
     try:
-        if await check_subscription(callback.from_user.id, bot):
-            await callback.message.edit_text("✅ Подписка подтверждена!", reply_markup=main_menu())
+        if await check_subscription(user_id, bot):
+            await get_user_diamonds(user_id, name)
+            await callback.message.edit_text("✅ Подписка подтверждена!", reply_markup=main_menu(user_id))
         else:
             await callback.answer("❌ Ты не подписался на все каналы!", show_alert=True)
     except (TelegramBadRequest, TelegramForbiddenError):
@@ -457,7 +597,7 @@ async def check_sub(callback: CallbackQuery, bot: Bot):
 @router.callback_query(F.data == "watch")
 async def watch(callback: CallbackQuery, bot: Bot):
     user_id = callback.from_user.id
-    diamonds = await get_user_diamonds(user_id)
+    diamonds = await get_user_diamonds(user_id, callback.from_user.first_name)
 
     if diamonds < 6:
         try: return await callback.answer("❌ Недостаточно алмазов (нужно 6)", show_alert=True)
@@ -465,7 +605,7 @@ async def watch(callback: CallbackQuery, bot: Bot):
 
     videos = list(MEDIA_DIR.glob("*.mp4")) + list(MEDIA_DIR.glob("*.MOV")) + list(MEDIA_DIR.glob("*.avi"))
     if not videos:
-        try: return await callback.answer("❌ Нет видео в папке media", show_alert=True)
+        try: return await callback.answer("❌ Нет видео в папке data/media", show_alert=True)
         except (TelegramBadRequest, TelegramForbiddenError): return
 
     await db.execute("UPDATE users SET diamonds = diamonds - 6 WHERE user_id = ?", (user_id,))
@@ -488,9 +628,51 @@ async def watch(callback: CallbackQuery, bot: Bot):
     try: await callback.answer("✅ Видео отправлено!")
     except (TelegramBadRequest, TelegramForbiddenError): pass
 
+# КНОПКА ОТПРАВКИ РАНДОМНОГО ФОТО ЗА 3 АЛМАЗА
+@router.callback_query(F.data == "watch_photo")
+async def watch_photo(callback: CallbackQuery, bot: Bot):
+    user_id = callback.from_user.id
+    diamonds = await get_user_diamonds(user_id, callback.from_user.first_name)
+
+    if diamonds < 3:
+        try: return await callback.answer("❌ Недостаточно алмазов (нужно 3)", show_alert=True)
+        except (TelegramBadRequest, TelegramForbiddenError): return
+
+    # Ищем картинки расширений jpg, jpeg, png, webp
+    photos = []
+    for ext in ("*.jpg", "*.jpeg", "*.png", "*.webp", "*.JPG", "*.JPEG", "*.PNG"):
+        photos.extend(PHOTO_DIR.glob(ext))
+
+    if not photos:
+        try: return await callback.answer("❌ Нет фото в папке data/photo", show_alert=True)
+        except (TelegramBadRequest, TelegramForbiddenError): return
+
+    await db.execute("UPDATE users SET diamonds = diamonds - 3 WHERE user_id = ?", (user_id,))
+    await db.commit()
+
+    photo_path = random.choice(photos)
+    
+    try:
+        await bot.send_photo(
+            chat_id=user_id,
+            photo=FSInputFile(photo_path),
+            caption="📸 Ваше случайное фото!"
+        )
+        await callback.answer("✅ Фото отправлено!")
+    except Exception as e:
+        print(f"Ошибка отправки фото: {e}")
+        # Если отправка сорвалась, возвращаем баланс
+        await add_diamonds(user_id, 3)
+        try: await callback.answer("❌ Ошибка отправки фото.", show_alert=True)
+        except Exception: pass
+
 @router.callback_query(F.data == "shop")
 async def shop(callback: CallbackQuery):
-    await callback.message.edit_text("🛒 Магазин алмазов:", reply_markup=shop_menu())
+    try:
+        await callback.message.edit_text("🛒 Магазин алмазов:", reply_markup=shop_menu())
+        await callback.answer()
+    except TelegramBadRequest:
+        await callback.answer()
 
 @router.callback_query(F.data.startswith("buy_"))
 async def buy_diamonds(callback: CallbackQuery, bot: Bot):
@@ -509,10 +691,13 @@ async def buy_diamonds(callback: CallbackQuery, bot: Bot):
             prices=[{"label": f"{diamonds} алмазов", "amount": stars}]
         )
     elif data == "buy_custom":
-        await callback.message.edit_text(
-            "Напиши количество алмазов (1 алмаз = 1 ⭐):",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Отмена", callback_data="shop")]])
-        )
+        try:
+            await callback.message.edit_text(
+                "Напиши количество алмазов (1 алмаз = 1 ⭐):",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Отмена", callback_data="shop")]])
+            )
+        except TelegramBadRequest:
+            pass
     try: await callback.answer()
     except (TelegramBadRequest, TelegramForbiddenError): pass
 
@@ -545,21 +730,24 @@ async def successful_payment(message: Message):
 
 @router.callback_query(F.data.in_({"back_main", "referral", "support"}))
 async def menu_handlers(callback: CallbackQuery, bot: Bot):
+    user_id = callback.from_user.id
     if callback.data == "referral":
         me = await bot.get_me()
-        link = f"https://t.me/{me.username}?start={callback.from_user.id}"
+        link = f"https://t.me/{me.username}?start={user_id}"
         text = f"👥 <b>Твоя реферальная ссылка:</b>\n\n<code>{link}</code>\n\nЗа каждого подписавшегося реферала — <b>+4 алмаза</b>"
     elif callback.data == "support":
         text = "🛠 Техподдержка: @твой_юзернейм"
     else:
         text = "Главное меню"
 
-    await callback.message.edit_text(
-        text, 
-        reply_markup=main_menu() if callback.data not in ["referral", "support"] else None
-    )
-    try: await callback.answer()
-    except (TelegramBadRequest, TelegramForbiddenError): pass
+    try:
+        await callback.message.edit_text(
+            text, 
+            reply_markup=main_menu(user_id) if callback.data not in ["referral", "support"] else None
+        )
+        await callback.answer()
+    except TelegramBadRequest:
+        await callback.answer()
 
 # ========================= ЗАПУСК =========================
 
