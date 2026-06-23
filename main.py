@@ -386,17 +386,18 @@ async def back_admin(callback: CallbackQuery, state: FSMContext):
 async def leaderboard_menu(callback: CallbackQuery):
     user_id = callback.from_user.id
     
-    # 1. Топ по алмазам
+    # 1. Топ по алмазам (тут всё работало отлично)
     async with db.execute("SELECT first_name, diamonds FROM users ORDER BY diamonds DESC LIMIT 5") as cur:
         top_diamonds = await cur.fetchall()
         
-    # 2. Топ по рефералам
+    # 2. ИСПРАВЛЕННЫЙ Топ по рефералам
+    # Считаем количество упоминаний каждого пользователя в колонке referred_by
     async with db.execute("""
-        SELECT u.first_name, COUNT(r.user_id) as ref_count 
-        FROM users u 
-        LEFT JOIN users r ON r.referred_by = u.user_id 
-        GROUP BY u.user_id 
-        ORDER BY ref_count DESC 
+        SELECT u.first_name, COUNT(r.user_id) as ref_count
+        FROM users u
+        INNER JOIN users r ON r.referred_by = u.user_id
+        GROUP BY u.user_id
+        ORDER BY ref_count DESC
         LIMIT 5
     """) as cur:
         top_referrals = await cur.fetchall()
@@ -408,8 +409,12 @@ async def leaderboard_menu(callback: CallbackQuery):
         text += f"{i}. {name} — <code>{count}</code> 💎\n"
         
     text += "\n👥 <b>Топ по приглашениям:</b>\n"
-    for i, (name, count) in enumerate(top_referrals, 1):
-        text += f"{i}. {name} — <code>{count}</code> реф.\n"
+    
+    if top_referrals:
+        for i, (name, count) in enumerate(top_referrals, 1):
+            text += f"{i}. {name} — <code>{count}</code> реф.\n"
+    else:
+        text += "<i>Пока никто никого не пригласил</i>\n"
         
     kb = InlineKeyboardBuilder()
     kb.button(text="◀️ Назад в меню", callback_data="back_main")
