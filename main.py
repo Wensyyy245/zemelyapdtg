@@ -57,11 +57,11 @@ class MirrorStates(StatesGroup):
 
 # ========================= БАЗА ДАННЫХ =========================
 
-db = None
-
 async def init_db():
     global db
     db = await aiosqlite.connect(DB_PATH)
+    
+    # Создаем таблицу, если её вообще не было
     await db.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -74,6 +74,24 @@ async def init_db():
             keep_videos INTEGER DEFAULT 0
         )
     """)
+    
+    # 💥 Альтер-скрипты для добавления колонок в уже существующую старую БД:
+    try:
+        await db.execute("ALTER TABLE users ADD COLUMN premium INTEGER DEFAULT 0")
+    except aiosqlite.OperationalError:
+        pass  # Колонка уже есть
+        
+    try:
+        await db.execute("ALTER TABLE users ADD COLUMN x2_until TEXT DEFAULT NULL")
+    except aiosqlite.OperationalError:
+        pass
+        
+    try:
+        await db.execute("ALTER TABLE users ADD COLUMN keep_videos INTEGER DEFAULT 0")
+    except aiosqlite.OperationalError:
+        pass
+
+    # Остальные таблицы
     await db.execute("""
         CREATE TABLE IF NOT EXISTS videos (
             file_id TEXT,
