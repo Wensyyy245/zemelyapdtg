@@ -304,26 +304,6 @@ async def process_mirror_token(message: Message, state: FSMContext, bot: Bot):
         await checking_msg.edit_text("❌ Ошибка на стороне Telegram.")
         await state.clear()
 
-# ===================== ПРОВЕРКА ПОДПИСКИ =====================
-    if not await check_subscription(user_id, bot):
-        kb = InlineKeyboardBuilder()
-        
-        for channel in CHANNELS:
-            if channel["type"] == "public":
-                url = f"https://t.me/{str(channel['id']).replace('@', '')}"
-            else:
-                url = channel.get("invite_link")
-            
-            kb.button(text=channel["name"], url=url)
-        
-        kb.button(text="✅ Я подписался на все каналы", callback_data="check_sub")
-        kb.adjust(1)
-        
-        await message.answer(
-            "👋 Для работы бота подпишись на все каналы:",
-            reply_markup=kb.as_markup()
-        )
-        return
 
 
 # ========================= АДМИН ПАНЕЛЬ =========================
@@ -732,20 +712,27 @@ async def start(message: Message, bot: Bot):
     udata = await get_user_data(user_id, name)
     await message.answer(f"Добро пожаловать! 💎\n\nНа балансе: <b>{udata['diamonds']}</b> алмазов", reply_markup=main_menu(user_id))
 
-@router.callback_query(F.data == "check_sub")
-async def check_sub(callback: CallbackQuery, bot: Bot):
-    user_id = callback.from_user.id
-    name = callback.from_user.first_name
-    if await check_subscription(user_id, bot):
-        udata = await get_user_data(user_id, name)
-        await callback.message.edit_text("✅ Подписка подтверждена!", reply_markup=main_menu(user_id))
-    else:
-        await callback.answer("❌ Ты не подписался!", show_alert=True)
+# ===================== ПРОВЕРКА ПОДПИСКИ =====================
+    if not await check_subscription(user_id, bot):
+        kb = InlineKeyboardBuilder()
+        
+        for channel in CHANNELS:
+            if channel["type"] == "public":
+                url = f"https://t.me/{str(channel['id']).replace('@', '')}"
+            else:
+                url = channel.get("invite_link")
+            
+            kb.button(text=channel["name"], url=url)
+        
+        kb.button(text="✅ Я подписался на все каналы", callback_data="check_sub")
+        kb.adjust(1)
+        
+        await message.answer(
+            "👋 Для работы бота подпишись на все каналы:",
+            reply_markup=kb.as_markup()
+        )
+        return
 
-@router.callback_query(F.data == "watch")
-async def watch(callback: CallbackQuery, bot: Bot):
-    user_id = callback.from_user.id
-    udata = await get_user_data(user_id, callback.from_user.first_name)
     
     # Если премиум — просмотр бесплатный
     if udata["premium"] == 0:
