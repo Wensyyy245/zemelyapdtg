@@ -2,6 +2,7 @@ import asyncio
 import random
 import os
 import sys
+import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -51,8 +52,8 @@ GLOBAL_BOTS_POOL = []
 
 class AdminStates(StatesGroup):
     mailing_text = State()
-    user_manage_id = State()    # Поиск юзера
-    user_change_diamonds = State() # Изменение баланса (+/-)
+    user_manage_id = State()    
+    user_change_diamonds = State() 
     event_percent = State()    
     event_hours = State()      
     event_giveaway = State()   
@@ -63,8 +64,12 @@ class PromoStates(StatesGroup):
     create_uses = State()
     activate_code = State()
 
+class CheckStates(StatesGroup):
+    create_diamonds = State()
+    create_uses = State()
+
 class ShopStates(StatesGroup):
-    custom_diamonds = State()  # Свое значение алмазов
+    custom_diamonds = State()  
 
 # ========================= БАЗА ДАННЫХ =========================
 
@@ -112,6 +117,23 @@ async def init_db():
             code TEXT PRIMARY KEY,
             creator_id INTEGER,
             reward INTEGER,
+            uses_left INTEGER
+        )
+    """)
+    # Таблица для отслеживания активаций промокодов (1 юзер = 1 активация конкретного кода)
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS promo_activations (
+            user_id INTEGER,
+            code TEXT,
+            PRIMARY KEY (user_id, code)
+        )
+    """)
+    # Таблица для чеков на алмазы
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS diamond_checks (
+            check_id TEXT PRIMARY KEY,
+            creator_id INTEGER,
+            diamonds_per_use INTEGER,
             uses_left INTEGER
         )
     """)
@@ -225,7 +247,7 @@ def main_menu(user_id: int):
     kb.button(text="📺 Смотреть видео (6 💎)", callback_data="watch")
     kb.button(text="📸 Посмотреть фото (3 💎)", callback_data="watch_photo")
     kb.button(text="🛒 Магазин 💰", callback_data="shop_main")
-    kb.button(text="🎟 Промокоды", callback_data="promo_menu")
+    kb.button(text="🎟 Чеки / Промо", callback_data="promo_menu")
     kb.button(text="🏆 Таблица Лидеров", callback_data="leaderboard")
     kb.button(text="👥 Рефералы", callback_data="referral")
     kb.button(text="🛠 Техподдержка", callback_data="support")
@@ -324,21 +346,70 @@ async def start(message: Message, bot: Bot):
     name = message.from_user.first_name
     args = message.text.split()
     
-    if len(args) > 1 and args[1].isdigit():
-        referrer_id = int(args[1])
-        if referrer_id != user_id:
-            async with db.execute("SELECT referred_by FROM users WHERE user_id = ?", (user_id,)) as cur:
-                if not await cur.fetchone():
-                    await db.execute("UPDATE users SET referred_by = ? WHERE user_id = ?", (referrer_id, user_id))
-                    ref_data = await get_user_data(referrer_id)
-                    
-                    base_reward = 4
-                    if await is_event_active("global_x2_until"): base_reward = 8 
-                    if ref_data["x2_until"] and datetime.fromisoformat(ref_data["x2_until"]) > datetime.now(): base_reward *= 2 
+    # Реферальная система или активация чеков
+    if len(args) > 1:
+        param = args[1]
+        
+        # АКТИВАЦИЯ ЧЕКА ИЗ КРИПТОБОТА
+        if param.startswith("check_"):
+            check_id = param.replace("check_", "")
+            
+            # Сначала проверяем подписку
+            if not await check_subscription(user_id, bot):
+                return await message.answer("⚠️ Чтобы забрать чек, сначала подпишитесь на наши каналы, а затем снова перейдите по ссылке!")
+                
+            async with db.execute("SELECT creator_id, diamonds_per_use, uses_left FROM diamond_checks WHERE check_id = ?", (check_id,)) as cur:
+                check_row = await cur.fetchone()
+                
+            if not check_row:
+                return await message.answer("❌ Данный чек не найден или уже полностью активирован.")
+                
+            creator_id, diamonds, uses_left = check_row
+            
+            if creator_id == user_id:
+                return await message.answer("❌ Вы не можете активировать свой собственный чек!")
+                
+            # Проверяем, не активировал ли этот юзер чек ранее
+            async with db.execute("SELECT 1 FROM promo_activations WHERE user_id = ? AND code = ?", (user_id, f"check_{check_id}")) as cur:
+                if await cur.fetchone():
+                    return await message.answer("❌ Вы уже активировали этот чек ранее!")
+            
+            # Проводим начисление
+            await add_diamonds(user_id, diamonds)
+            # Записываем активацию чека в базу
+            await db.execute("INSERT INTO promo_activations VALUES (?, ?)", (user_id, f"check_{check_id}"))
+            
+            if uses_left - 1 <= 0:
+                await db.execute("DELETE FROM diamond_checks WHERE check_id = ?", (check_id,))
+            else:
+                await db.execute("UPDATE diamond_checks SET uses_left = uses_left - 1 WHERE check_id = ?", (check_id,))
+                
+            await db.commit()
+            
+            # Уведомляем создателя
+            try:
+                await bot.send_message(creator_id, f"💸 Ваш чек был активирован! Пользователь {name} забрал {diamonds} 💎")
+            except Exception:
+                pass
+                
+            return await message.answer(f"🎉 <b>Чек успешно активирован!</b>\n\nВы получили: +<b>{diamonds}</b> 💎", reply_markup=main_menu(user_id))
+
+        # СТАНДАРТНЫЙ РЕФЕРАЛ (если это просто ID)
+        elif param.isdigit():
+            referrer_id = int(param)
+            if referrer_id != user_id:
+                async with db.execute("SELECT referred_by FROM users WHERE user_id = ?", (user_id,)) as cur:
+                    if not await cur.fetchone():
+                        await db.execute("UPDATE users SET referred_by = ? WHERE user_id = ?", (referrer_id, user_id))
+                        ref_data = await get_user_data(referrer_id)
                         
-                    await add_diamonds(referrer_id, base_reward)
-                    try: await bot.send_message(referrer_id, f"🎉 Новый реферал! Вам зачислено +{base_reward} 💎")
-                    except Exception: pass
+                        base_reward = 4
+                        if await is_event_active("global_x2_until"): base_reward = 8 
+                        if ref_data["x2_until"] and datetime.fromisoformat(ref_data["x2_until"]) > datetime.now(): base_reward *= 2 
+                            
+                        await add_diamonds(referrer_id, base_reward)
+                        try: await bot.send_message(referrer_id, f"🎉 Новый реферал! Вам зачислено +{base_reward} 💎")
+                        except Exception: pass
                     
     if not await check_subscription(user_id, bot):
         kb = InlineKeyboardBuilder()
@@ -364,6 +435,8 @@ async def check_sub(callback: CallbackQuery, bot: Bot):
         await callback.message.edit_text("✅ Подписка подтверждена!", reply_markup=main_menu(user_id))
     else:
         await callback.answer("❌ Ты не подписался на все каналы!", show_alert=True)
+
+# ========================= МАГАЗИН И ПЛАТЕЖИ =========================
 
 @router.callback_query(F.data == "shop_main")
 async def shop_main(callback: CallbackQuery):
@@ -413,9 +486,7 @@ async def process_custom_diamonds(message: Message, state: FSMContext):
     diamonds = int(text)
     await state.clear()
     
-    # Расчет цены: 1 алмаз = 0.5 звезды
     raw_stars = diamonds * 0.5
-    # Округляем в большую сторону до целой звезды
     stars_price = max(1, int(raw_stars + 0.999))
     
     is_disc = await is_event_active("global_discount_until")
@@ -531,6 +602,8 @@ async def buy_prem_plus(callback: CallbackQuery):
     await callback.answer("🔥 PREMIUM+ статус активирован!", show_alert=True)
     await shop_main(callback)
 
+# ========================= ПРОСМОТР МЕДИА =========================
+
 @router.callback_query(F.data == "watch")
 async def watch(callback: CallbackQuery, bot: Bot):
     user_id = callback.from_user.id
@@ -585,11 +658,19 @@ async def watch_photo(callback: CallbackQuery, bot: Bot):
     await bot.send_photo(chat_id=user_id, photo=FSInputFile(random.choice(photos)), caption="🍀 Счастливый час: +2 💎!" if is_lucky else None)
     await callback.answer()
 
+# ========================= МЕНЮ ПРОМОКОДОВ И ЧЕКОВ =========================
+
 @router.callback_query(F.data == "promo_menu")
 async def promo_menu(callback: CallbackQuery):
-    kb = InlineKeyboardBuilder().button(text="✨ Активировать", callback_data="promo_activate").button(text="➕ Создать", callback_data="promo_create").button(text="◀️ Назад", callback_data="back_main").adjust(1)
-    await callback.message.edit_text("🎟 Промокоды:", reply_markup=kb.as_markup())
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🎫 Активировать промокод", callback_data="promo_activate")
+    kb.button(text="➕ Создать промокод", callback_data="promo_create")
+    kb.button(text="🧾 Создать чек (как в CryptoBot)", callback_data="check_create")
+    kb.button(text="◀️ Назад в главное меню", callback_data="back_main")
+    kb.adjust(1)
+    await callback.message.edit_text("🎟 <b>Раздел Чеков и Промокодов</b>\n\nЗдесь вы можете активировать промокод или упаковать свои алмазы в чеки для друзей!", reply_markup=kb.as_markup())
 
+# АКТИВАЦИЯ ПРОМОКОДА
 @router.callback_query(F.data == "promo_activate")
 async def promo_activate(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text("📥 Введите промокод:")
@@ -598,48 +679,147 @@ async def promo_activate(callback: CallbackQuery, state: FSMContext):
 @router.message(PromoStates.activate_code)
 async def process_promo_activate(message: Message, state: FSMContext):
     code = message.text.strip().upper()
+    user_id = message.from_user.id
     await state.clear()
-    async with db.execute("SELECT creator_id, reward, uses_left FROM promo_codes WHERE code = ?", (code,)) as cur: row = await cur.fetchone()
-    if not row: return await message.answer("❌ Не найден.")
-    cid, reward, left = row
-    if left <= 0: return await message.answer("❌ Закончился.")
-    if cid == message.from_user.id: return await message.answer("❌ Свой нельзя.")
     
-    if left - 1 == 0: await db.execute("DELETE FROM promo_codes WHERE code = ?", (code,))
-    else: await db.execute("UPDATE promo_codes SET uses_left = uses_left - 1 WHERE code = ?", (code,))
-    await add_diamonds(message.from_user.id, reward)
+    async with db.execute("SELECT creator_id, reward, uses_left FROM promo_codes WHERE code = ?", (code,)) as cur: 
+        row = await cur.fetchone()
+        
+    if not row: 
+        return await message.answer("❌ Промокод не найден.")
+        
+    cid, reward, left = row
+    if left <= 0: 
+        return await message.answer("❌ Промокод закончился.")
+        
+    if cid == user_id: 
+        return await message.answer("❌ Вы не можете активировать собственный промокод.")
+    
+    # ПРОВЕРКА НА ПОВТОРНУЮ АКТИВАЦИЮ (1 человек = 1 активация)
+    async with db.execute("SELECT 1 FROM promo_activations WHERE user_id = ? AND code = ?", (user_id, code)) as cur:
+        if await cur.fetchone():
+            return await message.answer("❌ Вы уже активировали этот промокод ранее!")
+            
+    # Записываем факт активации, списываем попытку и даем награду
+    await db.execute("INSERT INTO promo_activations VALUES (?, ?)", (user_id, code))
+    
+    if left - 1 == 0: 
+        await db.execute("DELETE FROM promo_codes WHERE code = ?", (code,))
+    else: 
+        await db.execute("UPDATE promo_codes SET uses_left = uses_left - 1 WHERE code = ?", (code,))
+        
+    await add_diamonds(user_id, reward)
     await db.commit()
-    await message.answer(f"🎉 Активирован! +{reward} 💎")
+    await message.answer(f"🎉 <b>Промокод успешно активирован!</b>\nНа ваш баланс зачислено: +<b>{reward}</b> 💎")
 
+# СОЗДАНИЕ ПРОМОКОДА
 @router.callback_query(F.data == "promo_create")
 async def promo_create(callback: CallbackQuery, state: FSMContext):
-    await callback.message.edit_text("✨ Текст промокода:")
+    await callback.message.edit_text("✨ Введите текст промокода (слово/код):")
     await state.set_state(PromoStates.create_code)
 
 @router.message(PromoStates.create_code)
 async def process_promo_code(message: Message, state: FSMContext):
     await state.update_data(code=message.text.strip().upper())
-    await message.answer("💎 Награда за активацию:")
+    await message.answer("💎 Введите награду в алмазах за 1 активацию:")
     await state.set_state(PromoStates.create_reward)
 
 @router.message(PromoStates.create_reward)
 async def process_promo_reward(message: Message, state: FSMContext):
+    if not message.text.isdigit():
+        return await message.answer("❌ Введите целое число:")
     await state.update_data(reward=int(message.text))
-    await message.answer("👥 Кол-во активаций:")
+    await message.answer("👥 Кол-во людей, которые смогут его активировать:")
     await state.set_state(PromoStates.create_uses)
 
 @router.message(PromoStates.create_uses)
 async def process_promo_uses(message: Message, state: FSMContext):
+    if not message.text.isdigit():
+        return await message.answer("❌ Введите целое число:")
+        
     uses = int(message.text)
     data = await state.get_data()
     total = data['reward'] * uses
     bal = await get_user_data(message.from_user.id)
-    if bal['diamonds'] < total: return await message.answer("❌ Недостаточно 💎")
+    
+    if bal['diamonds'] < total: 
+        await state.clear()
+        return await message.answer("❌ Недостаточно 💎 для обеспечения промокода!")
+        
     await db.execute("UPDATE users SET diamonds = diamonds - ? WHERE user_id = ?", (total, message.from_user.id))
     await db.execute("INSERT INTO promo_codes VALUES (?, ?, ?, ?)", (data['code'], message.from_user.id, data['reward'], uses))
     await db.commit()
-    await message.answer(f"✅ Создан {data['code']}")
     await state.clear()
+    
+    # КРАСИВЫЙ СТИЛЬНЫЙ ТЕКСТ ПОСЛЕ СОЗДАНИЯ
+    beautiful_text = (
+        f"🎟 <b>ПРОМОКОД УСПЕШНО СОЗДАН!</b> 🎟\n"
+        f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n\n"
+        f"🏷 <b>Код:</b> <code>{data['code']}</code>\n"
+        f"💎 <b>Ценность:</b> <code>{data['reward']}</code> алмазов каждому\n"
+        f"👥 <b>Лимит активаций:</b> <code>{uses}</code> человек(а)\n\n"
+        f"ℹ️ <i>Каждый пользователь бота сможет активировать этот промокод строго <b>один раз</b>!</i>\n"
+        f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
+        f"👉 Нажмите на код выше, чтобы скопировать его."
+    )
+    await message.answer(beautiful_text, reply_markup=main_menu(message.from_user.id))
+
+
+# ========================= СИСТЕМА ЧЕКОВ (CRYPTOBOT СТИЛЬ) =========================
+
+@router.callback_query(F.data == "check_create")
+async def check_create(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_text("🧾 <b>Создание алмазного чека</b>\n\nВведите количество алмазов, которое получит <b>один</b> человек:")
+    await state.set_state(CheckStates.create_diamonds)
+
+@router.message(CheckStates.create_diamonds)
+async def process_check_diamonds(message: Message, state: FSMContext):
+    if not message.text.isdigit() or int(message.text) <= 0:
+        return await message.answer("❌ Введите корректное число алмазов:")
+    await state.update_data(diamonds=int(message.text))
+    await message.answer("👥 Сколько человек смогут забрать этот чек?")
+    await state.set_state(CheckStates.create_uses)
+
+@router.message(CheckStates.create_uses)
+async def process_check_uses(message: Message, state: FSMContext):
+    if not message.text.isdigit() or int(message.text) <= 0:
+        return await message.answer("❌ Введите корректное число человек:")
+        
+    uses = int(message.text)
+    data = await state.get_data()
+    diamonds_per_use = data['diamonds']
+    total_needed = diamonds_per_use * uses
+    
+    bal = await get_user_data(message.from_user.id)
+    if bal['diamonds'] < total_needed:
+        await state.clear()
+        return await message.answer(f"❌ У вас недостаточно алмазов. Требуется: {total_needed} 💎, у вас: {bal['diamonds']} 💎")
+        
+    # Списываем баланс и создаем чек
+    check_id = str(uuid.uuid4())[:8].upper() # Короткий уникальный ID чека
+    await db.execute("UPDATE users SET diamonds = diamonds - ? WHERE user_id = ?", (total_needed, message.from_user.id))
+    await db.execute("INSERT INTO diamond_checks VALUES (?, ?, ?, ?)", (check_id, message.from_user.id, diamonds_per_use, uses))
+    await db.commit()
+    await state.clear()
+    
+    # Получаем юзернейм бота для генерации красивой прямой ссылки
+    me = await message.bot.get_me()
+    check_link = f"https://t.me/{me.username}?start=check_{check_id}"
+    
+    beautiful_check_text = (
+        f"🧾 <b>ЧЕК НА АЛМАЗЫ ГОТОВ!</b> 🧾\n"
+        f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n\n"
+        f"💰 <b>Номинал:</b> <code>{diamonds_per_use}</code> 💎 на человека\n"
+        f"👥 <b>Количество активаций:</b> <code>{uses}</code>\n"
+        f"💎 <b>Всего выделено:</b> <code>{total_needed}</code> 💎\n\n"
+        f"🔗 <b>Ссылка для активации чека:</b>\n"
+        f"<code>{check_link}</code>\n\n"
+        f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
+        f"📢 <i>Отправьте эту ссылку другу или в чат. Тот, кто перейдет по ней первым, мгновенно заберет награду!</i>"
+    )
+    await message.answer(beautiful_check_text, reply_markup=main_menu(message.from_user.id))
+
+# ========================= ОСТАЛЬНЫЕ СТАНДАРТНЫЕ ХЕНДЛЕРЫ =========================
 
 @router.callback_query(F.data == "leaderboard")
 async def leaderboard_menu(callback: CallbackQuery):
