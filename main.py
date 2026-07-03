@@ -20,7 +20,7 @@ from aiogram.exceptions import TelegramBadRequest, TelegramUnauthorizedError
 
 MAIN_TOKENS = [
     "8971264936:AAEX4G42x3OQRMdjvOJGAJFJdydIVDGp_PE",
-    "8912981144:AAEEWlyv51KMaVk2mehQubIyigRg10YkoL8",
+    "8749652033:AAGxEa4xA2BU9wEUUcntIH3MfEoRVBniiwQ",
 ]
 
 ADMIN_IDS = [
