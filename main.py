@@ -4,7 +4,7 @@ import os
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
-
+import aiohttp
 import aiosqlite
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
@@ -15,7 +15,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message, CallbackQuery, LabeledPrice, PreCheckoutQuery, FSInputFile
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.exceptions import TelegramBadRequest, TelegramUnauthorizedError
-
+from aiogram.client.session.aiohttp import AiohttpSession as aiosession
 # ========================= НАСТРОЙКИ МУЛЬТИБОТА =========================
 
 # СЮДА МОЖНО ЗАПИСЫВАТЬ МНОГО ТОКЕНОВ (Все эти боты будут главными и запустятся сразу)
@@ -29,8 +29,8 @@ ADMIN_ID = 8603534638
 
 # НАСТРОЙКА КАНАЛОВ (для закрытых укажи ID типа -100... и ссылку-приглашение)
 CHANNELS = [
-    ("@PavelGiftsPG, "Спонсор", "https://t.me/PavelGiftsPG"),
-    (-1004466816546, "Наш канал", "https://t.me/https://t.me/+ryYTkHSQG6VmNjUy"), 
+    (-1004466816546, "Наш канал", "https://t.me/+ryYTkHSQG6VmNjUy"),
+    ("@PavelGiftsPG", "Спонсор", "https://t.me/PavelGiftsPG"),
 ]
 
 DATA_DIR = Path("data")
@@ -264,20 +264,23 @@ async def check_sub(callback: CallbackQuery, bot: Bot):
     else:
         await callback.answer("❌ Ты не подписался на все каналы!", show_alert=True)
 
-# --- Магазин КАТЕГОРИИ (Telegram Stars Оплата) ---
 @router.callback_query(F.data == "shop_main")
 async def shop_main(callback: CallbackQuery):
     user_id = callback.from_user.id
     udata = await get_user_data(user_id, callback.from_user.first_name)
+    
     prem_status = "❌ Нет" if udata["premium"] == 0 else ("🌟 Premium" if udata["premium"] == 1 else "🔥 Premium+")
     keep_status = "✅ Да" if udata["keep_videos"] == 1 or udata["premium"] == 2 else "❌ Нет"
     boost_status = "❌ Нет"
     if udata["x2_until"] and datetime.fromisoformat(udata["x2_until"]) > datetime.now():
         boost_status = f"✅ Активен до {datetime.fromisoformat(udata['x2_until']).strftime('%H:%M %d.%m')}"
-        
+
     text = f"🛒 <b>Магазин категорий</b>\n\n💰 Баланс: <b>{udata['diamonds']}</b> 💎\n👑 Премиум: <b>{prem_status}</b>\n🚀 Буст х2: <b>{boost_status}</b>\n♾ Навсегда: <b>{keep_status}</b>"
-    try: await callback.message.edit_text(text, reply_markup=shop_categories_kb())
-    except TelegramBadRequest: pass
+
+    try:
+        await callback.message.edit_text(text, reply_markup=shop_categories_kb())
+    except TelegramBadRequest:
+        await callback.message.answer(text, reply_markup=shop_categories_kb())
 
 @router.callback_query(F.data == "cat_diamonds")
 async def cat_diamonds(callback: CallbackQuery):
@@ -525,12 +528,10 @@ async def delete_old_videos():
 
 async def main():
     await init_db()
-    
-    # Инициализируем главный диспетчер (общий для всех ботов)
+   
     dp = Dispatcher()
     dp.include_router(router)
-    
-    # Регистрируем глобальные хендлеры платежей
+
     @dp.pre_checkout_query()
     async def global_pre_checkout(pre_checkout_query: PreCheckoutQuery):
         await pre_checkout_query.answer(ok=True)
@@ -544,40 +545,43 @@ async def main():
             await message.answer(f"🎉 <b>Оплата через Telegram Stars зачислена!</b> +<b>{diamonds}</b> 💎.")
 
     bots_pool = []
-    
-    # 1. Загружаем и валидируем все основные боты из массива MAIN_TOKENS
+   
     print(f"⏳ Проверка основного списка токенов ({len(MAIN_TOKENS)} шт)...")
     for token in MAIN_TOKENS:
         try:
-            bot_instance = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+            # Простая версия без лишних настроек
+            bot_instance = Bot(
+                token=token, 
+                default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+            )
             bot_user = await bot_instance.get_me()
             await bot_instance.delete_webhook(drop_pending_updates=True)
             bots_pool.append(bot_instance)
             print(f"✅ Основной бот @{bot_user.username} успешно добавлен в пул.")
         except Exception as e:
-            print(f"❌ Не удалось запустить основной токен {token[:15]}... Ошибка: {e}")
+            print(f"❌ Не удалось запустить токен {token[:15]}...: {e}")
 
     if not bots_pool:
-        print("❌ КРИТИЧЕСКАЯ ОШИБКА: Ни один токен из списка MAIN_TOKENS не валиден. Запуск невозможен.")
+        print("❌ Нет рабочих токенов!")
         return
 
-    # 2. Добавляем зеркала пользователей из базы данных
-    async with db.execute("SELECT token FROM mirrors") as cur: mirrors = await cur.fetchall()
+    # === Зеркала ===
+    async with db.execute("SELECT token FROM mirrors") as cur:
+        mirrors = await cur.fetchall()
     for (token,) in mirrors:
-        if token in MAIN_TOKENS: continue # Пропускаем, если он уже добавлен как основной
+        if token in MAIN_TOKENS: 
+            continue
         try:
             mirror_bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
             await mirror_bot.delete_webhook(drop_pending_updates=True)
             bots_pool.append(mirror_bot)
-            print(f"✅ Зеркало юзера {token[:12]}... подключено в общий пул.")
+            print(f"✅ Зеркало загружено")
         except Exception as e:
-            print(f"⚠️ Зеркало юзера {token[:12]}... пропущено из-за ошибки: {e}")
+            print(f"⚠️ Зеркало не запустилось: {e}")
 
-    # 3. Запуск фоновой очистки видеофайлов
     asyncio.create_task(delete_old_videos())
-    
-    # Запускаем одновременный Long Polling для всего пула ботов
-    print(f"🚀 Запуск одновременного пуллинга для {len(bots_pool)} ботов на Telegram Stars!")
+
+    print(f"🚀 Запуск {len(bots_pool)} ботов...")
     await dp.start_polling(*bots_pool)
 
 if __name__ == "__main__":
