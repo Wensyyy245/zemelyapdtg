@@ -761,6 +761,7 @@ async def process_promo_uses(message: Message, state: FSMContext):
         f"ℹ️ <i>Каждый пользователь бота сможет активировать этот промокод строго <b>один раз</b>!</i>\n"
         f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
         f"👉 Нажмите на код выше, чтобы скопировать его."
+        f"👉 Боты для активации: @zemelyacomeback_bot @ZemlayyaBot"
     )
     await message.answer(beautiful_text, reply_markup=main_menu(message.from_user.id))
 
