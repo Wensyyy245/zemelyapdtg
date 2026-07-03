@@ -839,7 +839,7 @@ async def static_callbacks(callback: CallbackQuery, bot: Bot):
         me = await bot.get_me()
         await callback.message.edit_text(f"👥 Реф. ссылка:\n<code>https://t.me/{me.username}?start={callback.from_user.id}</code>\n\nПриглашение: +4 💎", reply_markup=InlineKeyboardBuilder().button(text="◀️ Назад", callback_data="back_main").as_markup())
     elif callback.data == "support":
-        await callback.message.edit_text("🛠 ТП: @твой_юзернейм", reply_markup=InlineKeyboardBuilder().button(text="◀️ Назад", callback_data="back_main").as_markup())
+        await callback.message.edit_text("🛠 ТП: @zemelya_admin", reply_markup=InlineKeyboardBuilder().button(text="◀️ Назад", callback_data="back_main").as_markup())
 
 # ========================= АДМИН ПАНЕЛЬ И СИСТЕМА ИВЕНТОВ =========================
 
