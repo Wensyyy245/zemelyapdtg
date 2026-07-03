@@ -26,27 +26,6 @@ CHANNELS = [
      "invite_link": "https://t.me/+ryYTkHSQG6VmNjUy"},
 ]
 
-# ===================== ПРОВЕРКА ПОДПИСКИ =====================
-    if not await check_subscription(user_id, bot):
-        kb = InlineKeyboardBuilder()
-        
-        for channel in CHANNELS:
-            if channel["type"] == "public":
-                url = f"https://t.me/{str(channel['id']).replace('@', '')}"
-            else:
-                url = channel.get("invite_link")
-            
-            kb.button(text=channel["name"], url=url)
-        
-        kb.button(text="✅ Я подписался на все каналы", callback_data="check_sub")
-        kb.adjust(1)
-        
-        await message.answer(
-            "👋 Для работы бота подпишись на все каналы:",
-            reply_markup=kb.as_markup()
-        )
-        return
-
 DATA_DIR = Path("data")
 MEDIA_DIR = DATA_DIR / "media"
 PHOTO_DIR = DATA_DIR / "photo"
@@ -324,6 +303,28 @@ async def process_mirror_token(message: Message, state: FSMContext, bot: Bot):
     except Exception:
         await checking_msg.edit_text("❌ Ошибка на стороне Telegram.")
         await state.clear()
+
+# ===================== ПРОВЕРКА ПОДПИСКИ =====================
+    if not await check_subscription(user_id, bot):
+        kb = InlineKeyboardBuilder()
+        
+        for channel in CHANNELS:
+            if channel["type"] == "public":
+                url = f"https://t.me/{str(channel['id']).replace('@', '')}"
+            else:
+                url = channel.get("invite_link")
+            
+            kb.button(text=channel["name"], url=url)
+        
+        kb.button(text="✅ Я подписался на все каналы", callback_data="check_sub")
+        kb.adjust(1)
+        
+        await message.answer(
+            "👋 Для работы бота подпишись на все каналы:",
+            reply_markup=kb.as_markup()
+        )
+        return
+
 
 # ========================= АДМИН ПАНЕЛЬ =========================
 
