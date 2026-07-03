@@ -18,12 +18,13 @@ from aiogram.exceptions import TelegramBadRequest, TelegramUnauthorizedError
 
 # ========================= НАСТРОЙКИ =========================
 
-MAIN_TOKEN = "8795865644:AAGyRpcvLHjCXmCtLoYUDevBNF7FtD-2qF8"
+MAIN_TOKEN = "8971264936:AAEX4G42x3OQRMdjvOJGAJFJdydIVDGp_PE"
 ADMIN_ID = 8603534638
 
 # НАСТРОЙКА КАНАЛОВ (для закрытых укажи ID типа -100... и ссылку-приглашение)
 CHANNELS = [
-    (-1004466816546, "Канал 1", "https://t.me/+ryYTkHSQG6VmNjUy"), 
+    ("@zemelya_new", "Публичный Канал 1", "https://t.me/zemelya_new"),
+    (-1004466816546, "Закрытый Канал 2", "https://t.me/+ryYTkHSQG6VmNjUy"), 
 ]
 
 DATA_DIR = Path("data")
@@ -35,9 +36,6 @@ MEDIA_DIR.mkdir(exist_ok=True)
 PHOTO_DIR.mkdir(exist_ok=True)
 
 DB_PATH = DATA_DIR / "bot.db"
-
-# Сюда складываем запущенные таски пулинга, чтобы они не уничтожались сборщиком мусора
-running_tasks = set()
 db = None
 
 # ========================= СОСТОЯНИЯ (FSM) =========================
@@ -75,15 +73,11 @@ async def init_db():
         )
     """)
     
-    # Защита структуры
-    try:
-        await db.execute("ALTER TABLE users ADD COLUMN premium INTEGER DEFAULT 0")
+    try: await db.execute("ALTER TABLE users ADD COLUMN premium INTEGER DEFAULT 0")
     except aiosqlite.OperationalError: pass
-    try:
-        await db.execute("ALTER TABLE users ADD COLUMN x2_until TEXT DEFAULT NULL")
+    try: await db.execute("ALTER TABLE users ADD COLUMN x2_until TEXT DEFAULT NULL")
     except aiosqlite.OperationalError: pass
-    try:
-        await db.execute("ALTER TABLE users ADD COLUMN keep_videos INTEGER DEFAULT 0")
+    try: await db.execute("ALTER TABLE users ADD COLUMN keep_videos INTEGER DEFAULT 0")
     except aiosqlite.OperationalError: pass
 
     await db.execute("""
@@ -112,7 +106,7 @@ async def init_db():
     """)
     await db.commit()
 
-# ========================= ХЕЛПЕРЫ БАНА И ДАННЫХ =========================
+# ========================= МИДЛВАРЬ БАНА И ХЕЛПЕРЫ =========================
 
 router = Router()
 
@@ -217,7 +211,7 @@ def admin_menu():
     kb.adjust(1)
     return kb.as_markup()
 
-# ========================= ОСНОВНАЯ ЛОГИКА БОТА =========================
+# ========================= ХЕНДЛЕРЫ БОТА =========================
 
 @router.message(Command("start"))
 async def start(message: Message, bot: Bot):
@@ -264,7 +258,7 @@ async def check_sub(callback: CallbackQuery, bot: Bot):
     else:
         await callback.answer("❌ Ты не подписался на все каналы!", show_alert=True)
 
-# --- Магазин (Категории) ---
+# --- Магазин КАТЕГОРИИ (Telegram Stars Оплата) ---
 @router.callback_query(F.data == "shop_main")
 async def shop_main(callback: CallbackQuery):
     user_id = callback.from_user.id
@@ -292,18 +286,16 @@ async def buy_diamonds_stars(callback: CallbackQuery):
         try:
             await callback.message.answer_invoice(
                 title=f"Покупка {diamonds} алмазов",
-                description=f"Начисление {diamonds} алмазов.",
+                description=f"Начисление {diamonds} алмазов на баланс.",
                 payload=f"buy_diamonds:{diamonds}",
-                currency="XTR",
+                currency="XTR", # Системные Звезды Telegram
                 prices=[LabeledPrice(label="Telegram Stars", amount=stars_price)]
             )
             await callback.answer()
         except Exception:
-            await callback.answer("❌ Ошибка создания инвойса.", show_alert=True)
+            await callback.answer("❌ Ошибка создания инвойса Stars.", show_alert=True)
 
-# Обработчики Stars вешаются глобально в коде запуска
-
-# --- Остальной функционал (Способности/Премиум) ---
+# --- Другие категории магазина ---
 @router.callback_query(F.data == "cat_abilities")
 async def cat_abilities(callback: CallbackQuery):
     try: await callback.message.edit_text("⚡ <b>Магазин способностей</b>", reply_markup=shop_abilities_kb())
@@ -327,7 +319,7 @@ async def buy_keep_videos(callback: CallbackQuery):
     if udata["diamonds"] < 500: return await callback.answer("❌ Нужно 500 💎", show_alert=True)
     await db.execute("UPDATE users SET diamonds = diamonds - 500, keep_videos = 1 WHERE user_id = ?", (user_id,))
     await db.commit()
-    await callback.answer("♾ Видео теперь сохраняются!", show_alert=True)
+    await callback.answer("♾ Видео теперь сохраняются навсегда!", show_alert=True)
     await shop_main(callback)
 
 @router.callback_query(F.data == "cat_premium")
@@ -343,7 +335,7 @@ async def buy_prem_normal(callback: CallbackQuery):
     if udata["diamonds"] < 1500: return await callback.answer("❌ Нужно 1500 💎", show_alert=True)
     await db.execute("UPDATE users SET diamonds = diamonds - 1500, premium = 1 WHERE user_id = ?", (user_id,))
     await db.commit()
-    await callback.answer("👑 PREMIUM активирован!", show_alert=True)
+    await callback.answer("👑 PREMIUM статус активирован!", show_alert=True)
     await shop_main(callback)
 
 @router.callback_query(F.data == "buy_prem_plus")
@@ -354,10 +346,10 @@ async def buy_prem_plus(callback: CallbackQuery):
     if udata["diamonds"] < 2000: return await callback.answer("❌ Нужно 2000 💎", show_alert=True)
     await db.execute("UPDATE users SET diamonds = diamonds - 2000, premium = 2 WHERE user_id = ?", (user_id,))
     await db.commit()
-    await callback.answer("🔥 PREMIUM+ активирован!", show_alert=True)
+    await callback.answer("🔥 PREMIUM+ статус активирован!", show_alert=True)
     await shop_main(callback)
 
-# --- Просмотр медиа ---
+# --- Контент ---
 @router.callback_query(F.data == "watch")
 async def watch(callback: CallbackQuery, bot: Bot):
     user_id = callback.from_user.id
@@ -390,14 +382,14 @@ async def watch_photo(callback: CallbackQuery, bot: Bot):
     await bot.send_photo(chat_id=user_id, photo=FSInputFile(random.choice(photos)))
     await callback.answer()
 
-# --- Зеркала (Интерфейс создания) ---
+# --- Зеркала, Промокоды, Лидерборд ---
 @router.callback_query(F.data == "mirror_menu")
 async def mirror_menu(callback: CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     async with db.execute("SELECT COUNT(*) FROM mirrors WHERE user_id = ? AND created_at >= ?", (user_id, (datetime.now() - timedelta(days=1)).isoformat())) as cur:
         if (await cur.fetchone())[0] >= 2: return await callback.answer("❌ Лимит: 2 зеркала в сутки.", show_alert=True)
     kb = InlineKeyboardBuilder().button(text="🔗 Подключить токен", callback_data="mirror_start_enter").button(text="◀️ Назад", callback_data="back_main").adjust(1)
-    await callback.message.edit_text("🪞 <b>Зеркала</b>\nОтправь токен бота из @BotFather и получи +20 💎!", reply_markup=kb.as_markup())
+    await callback.message.edit_text("🪞 <b>Создание зеркал</b>\nОтправь токен нового бота из @BotFather и получи +20 💎!", reply_markup=kb.as_markup())
 
 @router.callback_query(F.data == "mirror_start_enter")
 async def mirror_start_enter(callback: CallbackQuery, state: FSMContext):
@@ -410,24 +402,22 @@ async def process_mirror_token(message: Message, state: FSMContext):
     if ":" not in token or len(token) < 30: return await message.answer("❌ Неверный токен.")
     await state.clear()
     
-    msg = await message.answer("⏳ Запуск зеркала...")
+    msg = await message.answer("⏳ Перезапускаем ядро для активации зеркала...")
     try:
-        new_bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-        bot_user = await new_bot.get_me()
+        test_bot = Bot(token=token)
+        await test_bot.get_me()
+        await test_bot.session.close()
+        
         await db.execute("INSERT INTO mirrors (user_id, token, created_at) VALUES (?, ?, ?)", (message.from_user.id, token, datetime.now().isoformat()))
         await add_diamonds(message.from_user.id, 20)
         await db.commit()
         
-        # Запускаем независимый пулинг для зеркала
-        task = asyncio.create_task(launch_isolated_bot(token))
-        running_tasks.add(task)
-        task.add_done_callback(running_tasks.discard)
-        
-        await msg.edit_text(f"🎉 Зеркало @{bot_user.username} успешно запущено! +20 💎")
+        await msg.edit_text("🎉 Зеркало сохранено! Перезагружаю скрипт...")
+        # Мягкий автоматический рестарт процесса для подтягивания нового бота в пуллинг
+        os.execv(sys.executable, [sys.executable] + sys.argv)
     except Exception:
-        await msg.edit_text("❌ Ошибка авторизации токена.")
+        await msg.edit_text("❌ Ошибка авторизации токена. Проверьте его в @BotFather.")
 
-# --- Промокоды, Лидеры, Админка ---
 @router.callback_query(F.data == "promo_menu")
 async def promo_menu(callback: CallbackQuery):
     kb = InlineKeyboardBuilder().button(text="✨ Активировать", callback_data="promo_activate").button(text="➕ Создать", callback_data="promo_create").button(text="◀️ Назад", callback_data="back_main").adjust(1)
@@ -508,73 +498,77 @@ async def static_callbacks(callback: CallbackQuery, bot: Bot):
     elif callback.data == "support":
         await callback.message.edit_text("🛠 ТП: @твой_юзернейм", reply_markup=InlineKeyboardBuilder().button(text="◀️ Назад", callback_data="back_main").as_markup())
 
-# ========================= ЯДРО МУЛЬТИ-ПОЛЛИНГА (ИЗОЛЯЦИЯ) =========================
-
-async def launch_isolated_bot(token: str):
-    """Каждому боту — свой независимый диспетчер, чтобы события не пересекались."""
-    bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-    local_dp = Dispatcher()
-    
-    # Подключаем к диспетчеру бота наш общий роутер со всеми обработчиками
-    local_dp.include_router(router)
-    
-    # Регистрируем специфичные для каждого диспетчера платежные Stars-события
-    @local_dp.pre_checkout_query()
-    async def local_pre_checkout(pre_checkout_query: PreCheckoutQuery):
-        await pre_checkout_query.answer(ok=True)
-
-    @local_dp.message(F.successful_payment)
-    async def local_successful_payment(message: Message):
-        payload = message.successful_payment.invoice_payload
-        if payload.startswith("buy_diamonds:"):
-            diamonds = int(payload.split(":")[1])
-            await add_diamonds(message.from_user.id, diamonds)
-            await message.answer(f"🎉 <b>Telegram Stars зачислены!</b> +<b>{diamonds}</b> 💎.")
-
-    try:
-        await bot.delete_webhook(drop_pending_updates=True)
-        await local_dp.start_polling(bot, handle_signals=False)
-    except Exception as e:
-        print(f"Бот {token[:10]} остановлен или токен невалиден: {e}")
-    finally:
-        await bot.session.close()
+# ========================= СИСТЕМНЫЕ ФУНКЦИИ И ОЧИСТКА =========================
 
 async def delete_old_videos():
     while True:
         await asyncio.sleep(30)
         try:
             async with db.execute("SELECT message_id, chat_id FROM videos WHERE delete_at <= ?", (datetime.now().isoformat(),)) as cur: rows = await cur.fetchall()
-            # Для удаления используем главный инстанс бота
-            main_bot = Bot(token=MAIN_TOKEN)
-            for mid, cid in rows:
-                try: await main_bot.delete_message(cid, mid)
-                except Exception: pass
-                await db.execute("DELETE FROM videos WHERE message_id = ? AND chat_id = ?", (mid, cid))
-            await db.commit()
-            await main_bot.session.close()
+            if rows:
+                main_bot = Bot(token=MAIN_TOKEN)
+                for mid, cid in rows:
+                    try: await main_bot.delete_message(cid, mid)
+                    except Exception: pass
+                    await db.execute("DELETE FROM videos WHERE message_id = ? AND chat_id = ?", (mid, cid))
+                await db.commit()
+                await main_bot.session.close()
         except Exception: pass
+
+# ========================= ЕДИНЫЙ ТОЧКА ВХОДА СИСТЕМЫ ПОЛЛИНГА =========================
 
 async def main():
     await init_db()
     
-    # 1. Запуск главного бота
-    main_task = asyncio.create_task(launch_isolated_bot(MAIN_TOKEN))
-    running_tasks.add(main_task)
+    # Инициализируем главный глобальный диспетчер
+    dp = Dispatcher()
+    dp.include_router(router)
     
-    # 2. Запуск всех сохраненных зеркал из БД
+    # Регистрируем единые хендлеры платежей на Диспетчер
+    @dp.pre_checkout_query()
+    async def global_pre_checkout(pre_checkout_query: PreCheckoutQuery):
+        await pre_checkout_query.answer(ok=True)
+
+    @dp.message(F.successful_payment)
+    async def global_successful_payment(message: Message):
+        payload = message.successful_payment.invoice_payload
+        if payload.startswith("buy_diamonds:"):
+            diamonds = int(payload.split(":")[1])
+            await add_diamonds(message.from_user.id, diamonds)
+            await message.answer(f"🎉 <b>Оплата через Telegram Stars зачислена!</b> +<b>{diamonds}</b> 💎.")
+
+    # Собираем пулы активных и валидных ботов
+    bots_pool = []
+    
+    # 1. Добавляем главного бота
+    try:
+        main_bot = Bot(token=MAIN_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+        await main_bot.delete_webhook(drop_pending_updates=True)
+        bots_pool.append(main_bot)
+        print("✅ Главный бот успешно подготовлен.")
+    except Exception as e:
+        print(f"❌ Критическая ошибка инициализации главного токена: {e}")
+        return
+
+    # 2. Добавляем зеркала из базы данных
     async with db.execute("SELECT token FROM mirrors") as cur: mirrors = await cur.fetchall()
     for (token,) in mirrors:
-        mirror_task = asyncio.create_task(launch_isolated_bot(token))
-        running_tasks.add(mirror_task)
-        mirror_task.add_done_callback(running_tasks.discard)
-        
-    # 3. Фоновое удаление видео
+        if token == MAIN_TOKEN: continue
+        try:
+            mirror_bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+            await mirror_bot.delete_webhook(drop_pending_updates=True)
+            bots_pool.append(mirror_bot)
+            print(f"✅ Зеркало {token[:12]}... подключено в общий пул.")
+        except Exception as e:
+            print(f"⚠️ Зеркало с токеном {token[:12]}... пропущено из-за ошибки: {e}")
+
+    # 3. Запуск фоновой очистки медиафайлов
     asyncio.create_task(delete_old_videos())
     
-    print("🚀 Все боты изолированы и запущены на Telegram Stars!")
-    # Удерживаем процесс активным
-    await asyncio.Event().wait()
+    # Включаем параллельный мульти-пуллинг на одном диспетчере
+    print(f"🚀 Запуск одновременного пуллинга для {len(bots_pool)} ботов...")
+    await dp.start_polling(*bots_pool)
 
 if __name__ == "__main__":
     try: asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit): print("Выключение.")
+    except (KeyboardInterrupt, SystemExit): print("Выключение ядра.")
