@@ -19,29 +19,20 @@ from aiogram.exceptions import TelegramBadRequest, TelegramUnauthorizedError
 # ========================= НАСТРОЙКИ МУЛЬТИБОТА =========================
 
 MAIN_TOKENS = [
-
     "8971264936:AAEX4G42x3OQRMdjvOJGAJFJdydIVDGp_PE",
-
     "8912981144:AAEEWlyv51KMaVk2mehQubIyigRg10YkoL8",
-
-    # "ТРЕТИЙ_ТОКЕН_СЮДА",
-
 ]
 
-
-
-ADMIN_ID = 8502341995, 8570452473
-
-
-
-# НАСТРОЙКА КАНАЛОВ (для закрытых укажи ID типа -100... и ссылку-приглашение)
+# Список ID всех администраторов, у которых есть доступ к панели
+ADMIN_IDS = [
+    8603534638,  # Вы
+    8570452473,  # Второй админ
+    8502341995   # Третий админ
+]
 
 CHANNELS = [
-
     (-1004466816546, "Наш канал", "https://t.me/+ryYTkHSQG6VmNjUy"),
-
     ("@PavelGiftsPG", "Спонсор", "https://t.me/PavelGiftsPG"),
-
 ]
 
 DATA_DIR = Path("data")
@@ -61,8 +52,8 @@ class AdminStates(StatesGroup):
     mailing_text = State()
     user_manage_id = State()
     change_balance = State()
-    event_hours = State()       # Время для х2 / скидок
-    event_giveaway = State()    # Сумма раздачи
+    event_hours = State()       
+    event_giveaway = State()    
 
 class PromoStates(StatesGroup):
     create_code = State()
@@ -92,7 +83,6 @@ async def init_db():
         )
     """)
     
-    # Таблица для глобальных системных настроек и ивентов
     await db.execute("""
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
@@ -100,7 +90,6 @@ async def init_db():
         )
     """)
     
-    # Инициализация дефолтных настроек ивентов, если их нет
     await db.execute("INSERT OR IGNORE INTO settings VALUES ('global_x2_until', 'NULL')")
     await db.execute("INSERT OR IGNORE INTO settings VALUES ('global_discount_until', 'NULL')")
 
@@ -156,9 +145,7 @@ async def is_event_active(event_key: str) -> bool:
     except Exception:
         return False
 
-# Функция массового красивого оповещения об Ивентах
 async def broadcast_event_start(title: str, description: str, duration_hours: int = None):
-    # Формируем красивый шаблон сообщения
     time_str = f"⏳ <b>Длительность:</b> {duration_hours} час(ов)\n" if duration_hours else ""
     text = (
         f"🔔 <b>ГЛОБАЛЬНОЕ СОБЫТИЕ В БОТЕ!</b> 🔔\n"
@@ -178,7 +165,7 @@ async def broadcast_event_start(title: str, description: str, duration_hours: in
         for (uid,) in users:
             try:
                 await bot.send_message(chat_id=uid, text=text, parse_mode=ParseMode.HTML)
-                await asyncio.sleep(0.05) # Защита от флуда телеграма
+                await asyncio.sleep(0.05) 
             except Exception:
                 pass
         await bot.session.close()
@@ -236,10 +223,10 @@ def main_menu(user_id: int):
     kb.button(text="🛒 Магазин 💰", callback_data="shop_main")
     kb.button(text="🎟 Промокоды", callback_data="promo_menu")
     kb.button(text="🪞 Создать зеркало (+20 💎)", callback_data="mirror_menu")
-    kb.button(text="🏆 Table Лидеров", callback_data="leaderboard")
+    kb.button(text="🏆 Таблица Лидеров", callback_data="leaderboard")
     kb.button(text="👥 Рефералы", callback_data="referral")
     kb.button(text="🛠 Техподдержка", callback_data="support")
-    if user_id == ADMIN_ID:
+    if user_id in ADMIN_IDS:
         kb.button(text="⚙️ Admin Panel", callback_data="admin_enter")
     kb.adjust(1)
     return kb.as_markup()
@@ -316,13 +303,12 @@ async def start(message: Message, bot: Bot):
                     await db.execute("UPDATE users SET referred_by = ? WHERE user_id = ?", (referrer_id, user_id))
                     ref_data = await get_user_data(referrer_id)
                     
-                    # Логика ивента х2 рефералов
                     base_reward = 4
                     if await is_event_active("global_x2_until"):
-                        base_reward = 8 # Глобальный х2 ивент активен
+                        base_reward = 8 
                         
                     if ref_data["x2_until"] and datetime.fromisoformat(ref_data["x2_until"]) > datetime.now():
-                        base_reward *= 2 # Удваиваем еще раз, если у юзера куплен личный буст
+                        base_reward *= 2 
                         
                     await add_diamonds(referrer_id, base_reward)
                     try: await bot.send_message(referrer_id, f"🎉 Новый реферал! Вам зачислено +{base_reward} 💎")
@@ -353,7 +339,6 @@ async def check_sub(callback: CallbackQuery, bot: Bot):
     else:
         await callback.answer("❌ Ты не подписался на все каналы!", show_alert=True)
 
-# --- Магазин КАТЕГОРИИ С УЧЕТОМ СКИДОК ---
 @router.callback_query(F.data == "shop_main")
 async def shop_main(callback: CallbackQuery):
     user_id = callback.from_user.id
@@ -457,7 +442,6 @@ async def buy_prem_plus(callback: CallbackQuery):
     await callback.answer("🔥 PREMIUM+ статус активирован!", show_alert=True)
     await shop_main(callback)
 
-# --- Контент ---
 @router.callback_query(F.data == "watch")
 async def watch(callback: CallbackQuery, bot: Bot):
     user_id = callback.from_user.id
@@ -490,7 +474,6 @@ async def watch_photo(callback: CallbackQuery, bot: Bot):
     await bot.send_photo(chat_id=user_id, photo=FSInputFile(random.choice(photos)))
     await callback.answer()
 
-# --- Зеркала, Промокоды, Лидерборд ---
 @router.callback_query(F.data == "mirror_menu")
 async def mirror_menu(callback: CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
@@ -605,12 +588,12 @@ async def static_callbacks(callback: CallbackQuery, bot: Bot):
 
 @router.callback_query(F.data == "admin_enter")
 async def admin_enter(callback: CallbackQuery):
-    if callback.from_user.id == ADMIN_ID: 
+    if callback.from_user.id in ADMIN_IDS: 
         await callback.message.edit_text("🛠 <b>Административная Панель</b>:", reply_markup=admin_menu())
 
 @router.callback_query(F.data == "admin_stats")
 async def admin_stats(callback: CallbackQuery):
-    if callback.from_user.id != ADMIN_ID: return
+    if callback.from_user.id not in ADMIN_IDS: return
     async with db.execute("SELECT COUNT(*) FROM users") as cur: total_users = (await cur.fetchone())[0]
     async with db.execute("SELECT COUNT(*) FROM mirrors") as cur: total_mirrors = (await cur.fetchone())[0]
     
@@ -629,29 +612,26 @@ async def admin_stats(callback: CallbackQuery):
 
 @router.callback_query(F.data == "admin_events_panel")
 async def admin_events_panel(callback: CallbackQuery):
-    if callback.from_user.id != ADMIN_ID: return
+    if callback.from_user.id not in ADMIN_IDS: return
     await callback.message.edit_text("🔥 <b>Управление Ивентами пользователей</b>\n\nВыберите тип ивента для настройки и запуска:", reply_markup=admin_events_kb())
 
-# Настройка ивента х2 рефералов (запрос времени)
 @router.callback_query(F.data == "ev_setup_x2")
 async def ev_setup_x2(callback: CallbackQuery, state: FSMContext):
-    if callback.from_user.id != ADMIN_ID: return
+    if callback.from_user.id not in ADMIN_IDS: return
     await callback.message.edit_text("⏳ <b>Ивент: х2 Рефералы</b>\n\nВведите время действия ивента в <b>ЧАСАХ</b> (целое число, например 12 или 24):")
     await state.set_state(AdminStates.event_hours)
     await state.update_data(event_type="x2")
 
-# Настройка скидок (запрос времени)
 @router.callback_query(F.data == "ev_setup_discount")
 async def ev_setup_discount(callback: CallbackQuery, state: FSMContext):
-    if callback.from_user.id != ADMIN_ID: return
+    if callback.from_user.id not in ADMIN_IDS: return
     await callback.message.edit_text("⏳ <b>Ивент: Скидки -30%</b>\n\nВведите время действия скидок в <b>ЧАСАХ</b> (целое число, например 6 или 48):")
     await state.set_state(AdminStates.event_hours)
     await state.update_data(event_type="discount")
 
-# Обработка ввода времени и старт ивента (х2 или Скидки)
 @router.message(AdminStates.event_hours)
 async def process_event_hours(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID: return
+    if message.from_user.id not in ADMIN_IDS: return
     text = message.text.strip()
     if not text.isdigit():
         return await message.answer("❌ Пожалуйста, введите целое число часов:")
@@ -666,7 +646,6 @@ async def process_event_hours(message: Message, state: FSMContext):
     if etype == "x2":
         await set_setting("global_x2_until", until_time)
         await message.answer(f"✅ Глобальный ивент <b>х2 Рефералы</b> успешно запущен на {hours} ч.!")
-        # Запускаем красивую рассылку
         asyncio.create_task(broadcast_event_start(
             title="🚀 ДВОЙНЫЕ НАГРАДЫ ЗА ДРУЗЕЙ (х2)",
             description="С этого момента за каждого приглашенного реферала абсолютно все пользователи получают двойную выплату алмазов! Отличный шанс поднять баланс!",
@@ -682,16 +661,15 @@ async def process_event_hours(message: Message, state: FSMContext):
             duration_hours=hours
         ))
 
-# Настройка Глобальной Раздачи алмазов
 @router.callback_query(F.data == "ev_setup_giveaway")
 async def ev_setup_giveaway(callback: CallbackQuery, state: FSMContext):
-    if callback.from_user.id != ADMIN_ID: return
+    if callback.from_user.id not in ADMIN_IDS: return
     await callback.message.edit_text("🎁 <b>Ивент: Раздача Алмазов</b>\n\nВведите количество алмазов, которое получит <b>КАЖДЫЙ</b> пользователь системы:")
     await state.set_state(AdminStates.event_giveaway)
 
 @router.message(AdminStates.event_giveaway)
 async def process_event_giveaway(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID: return
+    if message.from_user.id not in ADMIN_IDS: return
     text = message.text.strip()
     if not text.isdigit():
         return await message.answer("❌ Введите корректное целое число алмазов:")
@@ -701,29 +679,26 @@ async def process_event_giveaway(message: Message, state: FSMContext):
     
     msg = await message.answer("⏳ Начисляю алмазы всей базе данных, пожалуйста, подождите...")
     
-    # Начисляем алмазы всем пользователям одной транзакцией
     await db.execute("UPDATE users SET diamonds = diamonds + ?", (amount,))
     await db.commit()
     
     await msg.edit_text(f"✅ Раздача завершена! Всем пользователям добавлено по +{amount} 💎.")
     
-    # Отправляем оповещение
     asyncio.create_task(broadcast_event_start(
         title="🎁 МГНОВЕННАЯ СУПЕР-РАЗДАЧА",
         description=f"Администрация зачислила на баланс каждому пользователю бота без исключения по <b>+{amount} алмазов</b>! Проверьте свой профиль!",
         duration_hours=None
     ))
 
-# Стандартная текстовая рассылка админа
 @router.callback_query(F.data == "admin_mail")
 async def admin_mail(callback: CallbackQuery, state: FSMContext):
-    if callback.from_user.id != ADMIN_ID: return
+    if callback.from_user.id not in ADMIN_IDS: return
     await callback.message.edit_text("📢 Введите текст рекламной рассылки:")
     await state.set_state(AdminStates.mailing_text)
 
 @router.message(AdminStates.mailing_text)
 async def process_admin_mailing(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID: return
+    if message.from_user.id not in ADMIN_IDS: return
     text = message.text
     await state.clear()
     
