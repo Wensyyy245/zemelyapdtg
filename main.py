@@ -23,11 +23,10 @@ MAIN_TOKENS = [
     "8912981144:AAEEWlyv51KMaVk2mehQubIyigRg10YkoL8",
 ]
 
-# Список ID всех администраторов, у которых есть доступ к панели
 ADMIN_IDS = [
     8603534638,  # Вы
     8570452473,  # Второй админ
-    8502341995   # Третий админ
+    8502341995   # Третий admin
 ]
 
 CHANNELS = [
@@ -46,14 +45,18 @@ PHOTO_DIR.mkdir(exist_ok=True)
 DB_PATH = DATA_DIR / "bot.db"
 db = None
 
+# Глобальный пул запущенных ботов для массовых рассылок по всем токенам
+GLOBAL_BOTS_POOL = []
+
 # ========================= СОСТОЯНИЯ (FSM) =========================
 
 class AdminStates(StatesGroup):
     mailing_text = State()
     user_manage_id = State()
     change_balance = State()
-    event_hours = State()       
-    event_giveaway = State()    
+    event_percent = State()    # Процент скидки
+    event_hours = State()      # Время ивента
+    event_giveaway = State()   # Раздача алмазов
 
 class PromoStates(StatesGroup):
     create_code = State()
@@ -92,13 +95,9 @@ async def init_db():
     
     await db.execute("INSERT OR IGNORE INTO settings VALUES ('global_x2_until', 'NULL')")
     await db.execute("INSERT OR IGNORE INTO settings VALUES ('global_discount_until', 'NULL')")
-
-    try: await db.execute("ALTER TABLE users ADD COLUMN premium INTEGER DEFAULT 0")
-    except aiosqlite.OperationalError: pass
-    try: await db.execute("ALTER TABLE users ADD COLUMN x2_until TEXT DEFAULT NULL")
-    except aiosqlite.OperationalError: pass
-    try: await db.execute("ALTER TABLE users ADD COLUMN keep_videos INTEGER DEFAULT 0")
-    except aiosqlite.OperationalError: pass
+    await db.execute("INSERT OR IGNORE INTO settings VALUES ('global_discount_percent', '30')")
+    await db.execute("INSERT OR IGNORE INTO settings VALUES ('global_x3_stars_until', 'NULL')")
+    await db.execute("INSERT OR IGNORE INTO settings VALUES ('global_free_view_until', 'NULL')")
 
     await db.execute("""
         CREATE TABLE IF NOT EXISTS videos (
@@ -145,6 +144,28 @@ async def is_event_active(event_key: str) -> bool:
     except Exception:
         return False
 
+# Функция рассылки, задействующая ВСЕ активные токены (основные + зеркала)
+async def send_to_all_bots(text: str):
+    if not GLOBAL_BOTS_POOL:
+        return
+    
+    async with db.execute("SELECT user_id FROM users") as cur:
+        users = await cur.fetchall()
+        
+    for (uid,) in users:
+        # Пытаемся отправить сообщение через случайного бота из пула, чтобы снизить нагрузку и лимиты Telegram
+        bot_worker = random.choice(GLOBAL_BOTS_POOL)
+        try:
+            await bot_worker.send_message(chat_id=uid, text=text, parse_mode=ParseMode.HTML)
+            await asyncio.sleep(0.03) 
+        except Exception:
+            # Если бот выдал ошибку, пробуем отправить через первый основной (резервный вариант)
+            try:
+                await GLOBAL_BOTS_POOL[0].send_message(chat_id=uid, text=text, parse_mode=ParseMode.HTML)
+                await asyncio.sleep(0.03)
+            except Exception:
+                pass
+
 async def broadcast_event_start(title: str, description: str, duration_hours: int = None):
     time_str = f"⏳ <b>Длительность:</b> {duration_hours} час(ов)\n" if duration_hours else ""
     text = (
@@ -156,19 +177,7 @@ async def broadcast_event_start(title: str, description: str, duration_hours: in
         f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
         f"🚀 Заходи скорей и используй момент по максимуму!"
     )
-    
-    async with db.execute("SELECT user_id FROM users") as cur:
-        users = await cur.fetchall()
-        
-    if MAIN_TOKENS:
-        bot = Bot(token=MAIN_TOKENS[0])
-        for (uid,) in users:
-            try:
-                await bot.send_message(chat_id=uid, text=text, parse_mode=ParseMode.HTML)
-                await asyncio.sleep(0.05) 
-            except Exception:
-                pass
-        await bot.session.close()
+    await send_to_all_bots(text)
 
 # ========================= МИДЛВАРЬ БАНА =========================
 
@@ -249,9 +258,9 @@ def shop_diamonds_kb():
     kb.adjust(1)
     return kb.as_markup()
 
-def shop_abilities_kb(discount: bool = False):
-    p1 = 35 if discount else 50
-    p2 = 350 if discount else 500
+def shop_abilities_kb(discount_pct: int = 0):
+    p1 = int(50 * (1 - discount_pct / 100))
+    p2 = int(500 * (1 - discount_pct / 100))
     kb = InlineKeyboardBuilder()
     kb.button(text=f"🚀 х2 от Рефералов (24ч) — {p1} 💎", callback_data="buy_boost_x2")
     kb.button(text=f"♾ Видео навсегда — {p2} 💎", callback_data="buy_keep_videos")
@@ -259,9 +268,9 @@ def shop_abilities_kb(discount: bool = False):
     kb.adjust(1)
     return kb.as_markup()
 
-def shop_premium_kb(discount: bool = False):
-    p1 = 1050 if discount else 1500
-    p2 = 1400 if discount else 2000
+def shop_premium_kb(discount_pct: int = 0):
+    p1 = int(1500 * (1 - discount_pct / 100))
+    p2 = int(2000 * (1 - discount_pct / 100))
     kb = InlineKeyboardBuilder()
     kb.button(text=f"🌟 Премиум (Все бесплатно) — {p1} 💎", callback_data="buy_prem_normal")
     kb.button(text=f"🔥 Премиум+ (Архивы + Навсегда) — {p2} 💎", callback_data="buy_prem_plus")
@@ -272,7 +281,7 @@ def shop_premium_kb(discount: bool = False):
 def admin_menu():
     kb = InlineKeyboardBuilder()
     kb.button(text="📊 Статистика", callback_data="admin_stats")
-    kb.button(text="📢 Рассылка текста", callback_data="admin_mail")
+    kb.button(text="📢 Рассылка текста (По всем токенам)", callback_data="admin_mail")
     kb.button(text="🔥 Управление ИВЕНТАМИ", callback_data="admin_events_panel")
     kb.button(text="◀️ Назад в меню", callback_data="back_main")
     kb.adjust(1)
@@ -281,8 +290,10 @@ def admin_menu():
 def admin_events_kb():
     kb = InlineKeyboardBuilder()
     kb.button(text="🚀 Запустить х2 Рефералы", callback_data="ev_setup_x2")
-    kb.button(text="🎁 Сделать Раздачу Алмазов", callback_data="ev_setup_giveaway")
-    kb.button(text="📉 Запустить Скидки -30% в шопе", callback_data="ev_setup_discount")
+    kb.button(text="📉 Настроить Скидки % (Кастомные)", callback_data="ev_setup_discount")
+    kb.button(text="🎁 Сделать Раздачу Алмазов всем", callback_data="ev_setup_giveaway")
+    kb.button(text="⚡️ Запустить х3 Алмазы (Stars)", callback_data="ev_setup_x3_stars")
+    kb.button(text="🆓 Запустить Бесплатный Просмотр медиа", callback_data="ev_setup_free_view")
     kb.button(text="◀️ Назад в Админку", callback_data="admin_enter")
     kb.adjust(1)
     return kb.as_markup()
@@ -351,7 +362,13 @@ async def shop_main(callback: CallbackQuery):
         boost_status = f"✅ Активен до {datetime.fromisoformat(udata['x2_until']).strftime('%H:%M %d.%m')}"
         
     is_disc = await is_event_active("global_discount_until")
-    disc_text = "\n⚠️ <b>🔥 ДЕЙСТВУЕТ ГЛОБАЛЬНАЯ СКИДКА -30% НА ВСЁ!</b>" if is_disc else ""
+    disc_text = ""
+    if is_disc:
+        pct = await get_setting("global_discount_percent")
+        disc_text = f"\n⚠️ <b>🔥 ДЕЙСТВУЕТ ГЛОБАЛЬНАЯ СКИДКА -{pct}% НА ВСЁ!</b>"
+
+    if await is_event_active("global_x3_stars_until"):
+        disc_text += "\n⚠️ <b>⚡️ ДЕЙСТВУЕТ ИВЕНТ: Х3 АЛМАЗЫ ПРИ ПОКУПКЕ!</b>"
 
     text = f"🛒 <b>Магазин категорий</b>{disc_text}\n\n💰 Баланс: <b>{udata['diamonds']}</b> 💎\n👑 Премиум: <b>{prem_status}</b>\n🚀 Буст х2: <b>{boost_status}</b>\n♾ Навсегда: <b>{keep_status}</b>"
     try: await callback.message.edit_text(text, reply_markup=shop_categories_kb())
@@ -382,14 +399,17 @@ async def buy_diamonds_stars(callback: CallbackQuery):
 @router.callback_query(F.data == "cat_abilities")
 async def cat_abilities(callback: CallbackQuery):
     is_disc = await is_event_active("global_discount_until")
-    try: await callback.message.edit_text("⚡ <b>Магазин способностей</b>", reply_markup=shop_abilities_kb(discount=is_disc))
+    pct = int(await get_setting("global_discount_percent")) if is_disc else 0
+    try: await callback.message.edit_text("⚡ <b>Магазин способностей</b>", reply_markup=shop_abilities_kb(discount_pct=pct))
     except TelegramBadRequest: pass
 
 @router.callback_query(F.data == "buy_boost_x2")
 async def buy_boost_x2(callback: CallbackQuery):
     user_id = callback.from_user.id
     udata = await get_user_data(user_id, callback.from_user.first_name)
-    price = 35 if await is_event_active("global_discount_until") else 50
+    is_disc = await is_event_active("global_discount_until")
+    pct = int(await get_setting("global_discount_percent")) if is_disc else 0
+    price = int(50 * (1 - pct / 100))
     
     if udata["diamonds"] < price: return await callback.answer(f"❌ Нужно {price} 💎", show_alert=True)
     await db.execute("UPDATE users SET diamonds = diamonds - ?, x2_until = ? WHERE user_id = ?", (price, (datetime.now() + timedelta(hours=24)).isoformat(), user_id))
@@ -402,7 +422,9 @@ async def buy_keep_videos(callback: CallbackQuery):
     user_id = callback.from_user.id
     udata = await get_user_data(user_id, callback.from_user.first_name)
     if udata["keep_videos"] == 1 or udata["premium"] == 2: return await callback.answer("Уже активно!", show_alert=True)
-    price = 350 if await is_event_active("global_discount_until") else 500
+    is_disc = await is_event_active("global_discount_until")
+    pct = int(await get_setting("global_discount_percent")) if is_disc else 0
+    price = int(500 * (1 - pct / 100))
     
     if udata["diamonds"] < price: return await callback.answer(f"❌ Нужно {price} 💎", show_alert=True)
     await db.execute("UPDATE users SET diamonds = diamonds - ?, keep_videos = 1 WHERE user_id = ?", (price, user_id))
@@ -413,7 +435,8 @@ async def buy_keep_videos(callback: CallbackQuery):
 @router.callback_query(F.data == "cat_premium")
 async def cat_premium(callback: CallbackQuery):
     is_disc = await is_event_active("global_discount_until")
-    try: await callback.message.edit_text("👑 <b>Премиум подписки</b>", reply_markup=shop_premium_kb(discount=is_disc))
+    pct = int(await get_setting("global_discount_percent")) if is_disc else 0
+    try: await callback.message.edit_text("👑 <b>Премиум подписки</b>", reply_markup=shop_premium_kb(discount_pct=pct))
     except TelegramBadRequest: pass
 
 @router.callback_query(F.data == "buy_prem_normal")
@@ -421,7 +444,9 @@ async def buy_prem_normal(callback: CallbackQuery):
     user_id = callback.from_user.id
     udata = await get_user_data(user_id, callback.from_user.first_name)
     if udata["premium"] >= 1: return await callback.answer("Уже активно!", show_alert=True)
-    price = 1050 if await is_event_active("global_discount_until") else 1500
+    is_disc = await is_event_active("global_discount_until")
+    pct = int(await get_setting("global_discount_percent")) if is_disc else 0
+    price = int(1500 * (1 - pct / 100))
     
     if udata["diamonds"] < price: return await callback.answer(f"❌ Нужно {price} 💎", show_alert=True)
     await db.execute("UPDATE users SET diamonds = diamonds - ?, premium = 1 WHERE user_id = ?", (price, user_id))
@@ -434,7 +459,9 @@ async def buy_prem_plus(callback: CallbackQuery):
     user_id = callback.from_user.id
     udata = await get_user_data(user_id, callback.from_user.first_name)
     if udata["premium"] == 2: return await callback.answer("Уже активно!", show_alert=True)
-    price = 1400 if await is_event_active("global_discount_until") else 2000
+    is_disc = await is_event_active("global_discount_until")
+    pct = int(await get_setting("global_discount_percent")) if is_disc else 0
+    price = int(2000 * (1 - pct / 100))
     
     if udata["diamonds"] < price: return await callback.answer(f"❌ Нужно {price} 💎", show_alert=True)
     await db.execute("UPDATE users SET diamonds = diamonds - ?, premium = 2 WHERE user_id = ?", (price, user_id))
@@ -446,14 +473,22 @@ async def buy_prem_plus(callback: CallbackQuery):
 async def watch(callback: CallbackQuery, bot: Bot):
     user_id = callback.from_user.id
     udata = await get_user_data(user_id, callback.from_user.first_name)
-    if udata["premium"] == 0:
+    
+    # Проверяем, активен ли ивент бесплатного просмотра
+    is_free = await is_event_active("global_free_view_until")
+    
+    if udata["premium"] == 0 and not is_free:
         if udata["diamonds"] < 6: return await callback.answer("❌ Нужно 6 💎", show_alert=True)
         await db.execute("UPDATE users SET diamonds = diamonds - 6 WHERE user_id = ?", (user_id,))
         await db.commit()
+        
     videos = list(MEDIA_DIR.glob("*.mp4")) + list(MEDIA_DIR.glob("*.MOV"))
     if not videos: return await callback.answer("Папка media пуста.", show_alert=True)
     is_forever = (udata["keep_videos"] == 1 or udata["premium"] == 2)
+    
     cap = "📹 Ваше видео!" if is_forever else "📹 Видео удалится через 30 минут."
+    if is_free: cap += " (🔥 По ивенту БЕСПЛАТНО)"
+        
     msg = await bot.send_video(chat_id=user_id, video=FSInputFile(random.choice(videos)), caption=cap)
     if not is_forever:
         await db.execute("INSERT INTO videos (file_id, message_id, chat_id, delete_at) VALUES (?, ?, ?, ?)", ("", msg.message_id, user_id, (datetime.now() + timedelta(minutes=30)).isoformat()))
@@ -464,10 +499,14 @@ async def watch(callback: CallbackQuery, bot: Bot):
 async def watch_photo(callback: CallbackQuery, bot: Bot):
     user_id = callback.from_user.id
     udata = await get_user_data(user_id, callback.from_user.first_name)
-    if udata["premium"] == 0:
+    
+    is_free = await is_event_active("global_free_view_until")
+    
+    if udata["premium"] == 0 and not is_free:
         if udata["diamonds"] < 3: return await callback.answer("❌ Нужно 3 💎", show_alert=True)
         await db.execute("UPDATE users SET diamonds = diamonds - 3 WHERE user_id = ?", (user_id,))
         await db.commit()
+        
     photos = []
     for ext in ("*.jpg", "*.jpeg", "*.png"): photos.extend(PHOTO_DIR.glob(ext))
     if not photos: return await callback.answer("Папка photo пуста.", show_alert=True)
@@ -598,34 +637,69 @@ async def admin_stats(callback: CallbackQuery):
     async with db.execute("SELECT COUNT(*) FROM mirrors") as cur: total_mirrors = (await cur.fetchone())[0]
     
     x2_active = "✅ Активен" if await is_event_active("global_x2_until") else "❌ Выключен"
-    disc_active = "✅ Активен" if await is_event_active("global_discount_until") else "❌ Выключен"
+    
+    is_disc = await is_event_active("global_discount_until")
+    pct = await get_setting("global_discount_percent")
+    disc_active = f"✅ Активен (-{pct}%)" if is_disc else "❌ Выключен"
+    
+    x3_stars = "✅ Активен" if await is_event_active("global_x3_stars_until") else "❌ Выключен"
+    free_view = "✅ Активен" if await is_event_active("global_free_view_until") else "❌ Выключен"
     
     text = (
         f"📊 <b>Статистика Системы:</b>\n\n"
         f"👥 Пользователей в БД: <b>{total_users}</b>\n"
-        f"🪞 Активных зеркал: <b>{total_mirrors}</b>\n\n"
+        f"🪞 Активных ботов в пуле: <b>{len(GLOBAL_BOTS_POOL)}</b> (вкл. зеркала)\n"
+        f"🪞 Всего зеркал в базе: <b>{total_mirrors}</b>\n\n"
         f"🔥 <b>Текущие Ивенты:</b>\n"
         f"🚀 Глобальный х2 реф: {x2_active}\n"
-        f"📉 Скидки -30% в магазине: {disc_active}"
+        f"📉 Кастомные Скидки в шопе: {disc_active}\n"
+        f"⚡️ Х3 Пополнение (Stars): {x3_stars}\n"
+        f"🆓 Бесплатные просмотры: {free_view}"
     )
     await callback.message.edit_text(text, reply_markup=InlineKeyboardBuilder().button(text="◀️ Назад", callback_data="admin_enter").as_markup())
 
 @router.callback_query(F.data == "admin_events_panel")
 async def admin_events_panel(callback: CallbackQuery):
     if callback.from_user.id not in ADMIN_IDS: return
-    await callback.message.edit_text("🔥 <b>Управление Ивентами пользователей</b>\n\nВыберите тип ивента для настройки и запуска:", reply_markup=admin_events_kb())
+    await callback.message.edit_text("🔥 <b>Управление Ивентами</b>\n\nВыберите тип ивента для настройки и запуска:", reply_markup=admin_events_kb())
 
 @router.callback_query(F.data == "ev_setup_x2")
 async def ev_setup_x2(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id not in ADMIN_IDS: return
-    await callback.message.edit_text("⏳ <b>Ивент: х2 Рефералы</b>\n\nВведите время действия ивента в <b>ЧАСАХ</b> (целое число, например 12 или 24):")
+    await callback.message.edit_text("⏳ <b>Ивент: х2 Рефералы</b>\n\nВведите время действия ивента в <b>ЧАСАХ</b>:")
     await state.set_state(AdminStates.event_hours)
     await state.update_data(event_type="x2")
 
+@router.callback_query(F.data == "ev_setup_x3_stars")
+async def ev_setup_x3_stars(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in ADMIN_IDS: return
+    await callback.message.edit_text("⚡️ <b>Ивент: Х3 К покупкам Stars</b>\n\nВведите время действия ивента в <b>ЧАСАХ</b>:")
+    await state.set_state(AdminStates.event_hours)
+    await state.update_data(event_type="x3_stars")
+
+@router.callback_query(F.data == "ev_setup_free_view")
+async def ev_setup_free_view(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in ADMIN_IDS: return
+    await callback.message.edit_text("🆓 <b>Ивент: Бесплатный Просмотр Медиа</b>\n\nВведите время действия ивента в <b>ЧАСАХ</b>:")
+    await state.set_state(AdminStates.event_hours)
+    await state.update_data(event_type="free_view")
+
+# Начало настройки кастомной скидки: сначала запрашиваем процент
 @router.callback_query(F.data == "ev_setup_discount")
 async def ev_setup_discount(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id not in ADMIN_IDS: return
-    await callback.message.edit_text("⏳ <b>Ивент: Скидки -30%</b>\n\nВведите время действия скидок в <b>ЧАСАХ</b> (целое число, например 6 или 48):")
+    await callback.message.edit_text("📉 <b>Ивент: Кастомные Скидки</b>\n\nШаг 1: Введите процент скидки (только число от 1 до 99, например 35 или 50):")
+    await state.set_state(AdminStates.event_percent)
+
+@router.message(AdminStates.event_percent)
+async def process_event_percent(message: Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS: return
+    text = message.text.strip()
+    if not text.isdigit() or not (1 <= int(text) <= 99):
+        return await message.answer("❌ Ошибка! Введите корректный процент скидки (от 1 до 99):")
+    
+    await state.update_data(discount_pct=int(text))
+    await message.answer("⏳ Шаг 2: Введите время действия скидок в <b>ЧАСАХ</b> (целое число):")
     await state.set_state(AdminStates.event_hours)
     await state.update_data(event_type="discount")
 
@@ -645,19 +719,39 @@ async def process_event_hours(message: Message, state: FSMContext):
     
     if etype == "x2":
         await set_setting("global_x2_until", until_time)
-        await message.answer(f"✅ Глобальный ивент <b>х2 Рефералы</b> успешно запущен на {hours} ч.!")
+        await message.answer(f"✅ Глобальный ивент <b>х2 Рефералы</b> запущен на {hours} ч.!")
         asyncio.create_task(broadcast_event_start(
             title="🚀 ДВОЙНЫЕ НАГРАДЫ ЗА ДРУЗЕЙ (х2)",
-            description="С этого момента за каждого приглашенного реферала абсолютно все пользователи получают двойную выплату алмазов! Отличный шанс поднять баланс!",
+            description="С этого момента за каждого приглашенного реферала абсолютно все пользователи получают двойную выплату алмазов!",
             duration_hours=hours
         ))
         
     elif etype == "discount":
+        pct = data.get("discount_pct", 30)
+        await set_setting("global_discount_percent", str(pct))
         await set_setting("global_discount_until", until_time)
-        await message.answer(f"✅ Ивент <b>Скидки -30%</b> успешно запущен на {hours} ч.!")
+        await message.answer(f"✅ Ивент <b>Скидки -{pct}%</b> успешно запущен на {hours} ч.!")
         asyncio.create_task(broadcast_event_start(
-            title="📉 ШОК-СКИДКИ В МАГАЗИНЕ (-30%)",
-            description="Цены на способности, улучшения и премиум-статусы во всех категориях магазина снижены на 30%! Успей закупиться по самой низкой цене!",
+            title=f"📉 ШОК-СКИДКИ В МАГАЗИНЕ (-{pct}%)",
+            description=f"Цены на способности, улучшения и премиум-статусы во всех категориях магазина снижены на {pct}%!",
+            duration_hours=hours
+        ))
+        
+    elif etype == "x3_stars":
+        await set_setting("global_x3_stars_until", until_time)
+        await message.answer(f"✅ Ивент <b>Х3 Алмазы за Stars</b> запущен на {hours} ч.!")
+        asyncio.create_task(broadcast_event_start(
+            title="⚡️ АЛМАЗНЫЙ ЛИВЕНЬ (Х3 К ПОКУПКАМ)",
+            description="Внимание! Любая покупка алмазов через Telegram Stars увеличивается в 3 раза! Покупаешь 100 — получаешь 300!",
+            duration_hours=hours
+        ))
+        
+    elif etype == "free_view":
+        await set_setting("global_free_view_until", until_time)
+        await message.answer(f"✅ Ивент <b>Бесплатный Просмотр</b> запущен на {hours} ч.!")
+        asyncio.create_task(broadcast_event_start(
+            title="🆓 АТТРАКЦИОН НЕВИДАННОЙ ЩЕДРОСТИ (0 💎)",
+            description="Администрация открыла бесплатный просмотр всех видео и фото для всех пользователей! Алмазы за просмотр списываться не будут!",
             duration_hours=hours
         ))
 
@@ -677,23 +771,22 @@ async def process_event_giveaway(message: Message, state: FSMContext):
     amount = int(text)
     await state.clear()
     
-    msg = await message.answer("⏳ Начисляю алмазы всей базе данных, пожалуйста, подождите...")
-    
+    msg = await message.answer("⏳ Начисляю алмазы всей базе данных...")
     await db.execute("UPDATE users SET diamonds = diamonds + ?", (amount,))
     await db.commit()
     
-    await msg.edit_text(f"✅ Раздача завершена! Всем пользователям добавлено по +{amount} 💎.")
+    await msg.edit_text(f"✅ Раздача завершена! Всем добавлено по +{amount} 💎.")
     
     asyncio.create_task(broadcast_event_start(
         title="🎁 МГНОВЕННАЯ СУПЕР-РАЗДАЧА",
-        description=f"Администрация зачислила на баланс каждому пользователю бота без исключения по <b>+{amount} алмазов</b>! Проверьте свой профиль!",
+        description=f"Администрация зачислила на баланс каждому пользователю бота без исключения по <b>+{amount} алмазов</b>!",
         duration_hours=None
     ))
 
 @router.callback_query(F.data == "admin_mail")
 async def admin_mail(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id not in ADMIN_IDS: return
-    await callback.message.edit_text("📢 Введите текст рекламной рассылки:")
+    await callback.message.edit_text("📢 Введите текст рекламной рассылки (уйдет по всем токенам/зеркалам):")
     await state.set_state(AdminStates.mailing_text)
 
 @router.message(AdminStates.mailing_text)
@@ -702,18 +795,9 @@ async def process_admin_mailing(message: Message, state: FSMContext):
     text = message.text
     await state.clear()
     
-    async with db.execute("SELECT user_id FROM users") as cur: users = await cur.fetchall()
-    await message.answer(f"⏳ Запущена стандартная рассылка на {len(users)} пользователей...")
-    
-    if MAIN_TOKENS:
-        bot = Bot(token=MAIN_TOKENS[0])
-        for (uid,) in users:
-            try:
-                await bot.send_message(uid, text, parse_mode=ParseMode.HTML)
-                await asyncio.sleep(0.05)
-            except Exception: pass
-        await bot.session.close()
-    await message.answer("✅ Рассылка полностью завершена.")
+    await message.answer("⏳ Запущена массовая мульти-рассылка по всей базе пользователей...")
+    await send_to_all_bots(text)
+    await message.answer("✅ Мульти-рассылка завершена.")
 
 # ========================= СИСТЕМНЫЕ ФУНКЦИИ И ОЧИСТКА =========================
 
@@ -722,19 +806,19 @@ async def delete_old_videos():
         await asyncio.sleep(30)
         try:
             async with db.execute("SELECT message_id, chat_id FROM videos WHERE delete_at <= ?", (datetime.now().isoformat(),)) as cur: rows = await cur.fetchall()
-            if rows and MAIN_TOKENS:
-                main_bot = Bot(token=MAIN_TOKENS[0])
+            if rows and GLOBAL_BOTS_POOL:
+                main_bot = GLOBAL_BOTS_POOL[0] # Удаляем через первого основного бота
                 for mid, cid in rows:
                     try: await main_bot.delete_message(cid, mid)
                     except Exception: pass
                     await db.execute("DELETE FROM videos WHERE message_id = ? AND chat_id = ?", (mid, cid))
                 await db.commit()
-                await main_bot.session.close()
         except Exception: pass
 
 # ========================= МУЛЬТИ-ПОЛЛИНГ ЯДРО =========================
 
 async def main():
+    global GLOBAL_BOTS_POOL
     await init_db()
     
     dp = Dispatcher()
@@ -749,23 +833,28 @@ async def main():
         payload = message.successful_payment.invoice_payload
         if payload.startswith("buy_diamonds:"):
             diamonds = int(payload.split(":")[1])
+            
+            # Если активен ивент Х3 на пополнение
+            if await is_event_active("global_x3_stars_until"):
+                diamonds *= 3
+                
             await add_diamonds(message.from_user.id, diamonds)
-            await message.answer(f"🎉 <b>Оплата через Telegram Stars зачислена!</b> +<b>{diamonds}</b> 💎.")
+            
+            x3_msg = " [⚡️ Сработал Ивент Х3!]" if await is_event_active("global_x3_stars_until") else ""
+            await message.answer(f"🎉 <b>Оплата через Telegram Stars зачислена!</b> +<b>{diamonds}</b> 💎.{x3_msg}")
 
-    bots_pool = []
-    
     print(f"⏳ Проверка основного списка токенов ({len(MAIN_TOKENS)} шт)...")
     for token in MAIN_TOKENS:
         try:
             bot_instance = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
             bot_user = await bot_instance.get_me()
             await bot_instance.delete_webhook(drop_pending_updates=True)
-            bots_pool.append(bot_instance)
-            print(f"✅ Основной бот @{bot_user.username} успешно добавлен в пул.")
+            GLOBAL_BOTS_POOL.append(bot_instance)
+            print(f"✅ Основной бот @{bot_user.username} добавлен в пул.")
         except Exception as e:
             print(f"❌ Не удалось запустить основной токен {token[:15]}... Ошибка: {e}")
 
-    if not bots_pool:
+    if not GLOBAL_BOTS_POOL:
         print("❌ КРИТИЧЕСКАЯ ОШИБКА: Ни один токен из списка MAIN_TOKENS не валиден.")
         return
 
@@ -775,15 +864,15 @@ async def main():
         try:
             mirror_bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
             await mirror_bot.delete_webhook(drop_pending_updates=True)
-            bots_pool.append(mirror_bot)
+            GLOBAL_BOTS_POOL.append(mirror_bot)
             print(f"✅ Зеркало юзера {token[:12]}... подключено в общий пул.")
         except Exception as e:
             print(f"⚠️ Зеркало юзера {token[:12]}... пропущено из-за ошибки: {e}")
 
     asyncio.create_task(delete_old_videos())
     
-    print(f"🚀 Запуск одновременного пуллинга для {len(bots_pool)} ботов на Telegram Stars!")
-    await dp.start_polling(*bots_pool)
+    print(f"🚀 Запуск одновременного пуллинга для {len(GLOBAL_BOTS_POOL)} ботов!")
+    await dp.start_polling(*GLOBAL_BOTS_POOL)
 
 if __name__ == "__main__":
     try: asyncio.run(main())
