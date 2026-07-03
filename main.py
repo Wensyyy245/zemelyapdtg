@@ -22,8 +22,7 @@ MAIN_TOKEN = "8971264936:AAEX4G42x3OQRMdjvOJGAJFJdydIVDGp_PE"
 ADMIN_ID = 8502341995
 
 CHANNELS = [
-    {"type": "private", "id": -1004466816546,  "name": "Канал 1", 
-     "invite_link": "https://t.me/+ryYTkHSQG6VmNjUy"},
+    (-1004466816546, "Наш канал", "https://t.me/+ryYTkHSQG6VmNjUy"), 
 ]
 
 DATA_DIR = Path("data")
@@ -712,26 +711,22 @@ async def start(message: Message, bot: Bot):
     udata = await get_user_data(user_id, name)
     await message.answer(f"Добро пожаловать! 💎\n\nНа балансе: <b>{udata['diamonds']}</b> алмазов", reply_markup=main_menu(user_id))
 
-# ===================== ПРОВЕРКА ПОДПИСКИ =====================
-    if not await check_subscription(user_id, bot):
-        kb = InlineKeyboardBuilder()
-        
-        for channel in CHANNELS:
-            if channel["type"] == "public":
-                url = f"https://t.me/{str(channel['id']).replace('@', '')}"
-            else:
-                url = channel.get("invite_link")
+async def check_subscription(user_id: int, bot: Bot) -> bool:
+    for channel_data in CHANNELS:
+        if isinstance(channel_data, (tuple, list)):
+            channel = channel_data[0]
+        else:
+            channel = channel_data
             
-            kb.button(text=channel["name"], url=url)
-        
-        kb.button(text="✅ Я подписался на все каналы", callback_data="check_sub")
-        kb.adjust(1)
-        
-        await message.answer(
-            "👋 Для работы бота подпишись на все каналы:",
-            reply_markup=kb.as_markup()
-        )
-        return
+        try:
+            member = await bot.get_chat_member(chat_id=channel, user_id=user_id)
+            if member.status not in ["member", "administrator", "creator"]:
+                return False
+        except Exception as e:
+            print(f"Ошибка проверки подписки на {channel}: {e}")
+            # Если бот не админ в закрытом канале, тут вылетит ошибка, и мы вернем False
+            return False
+    return True
 
     
     # Если премиум — просмотр бесплатный
