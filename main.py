@@ -18,11 +18,13 @@ from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, Teleg
 
 # ========================= НАСТРОЙКИ =========================
 
-MAIN_TOKEN = "8971264936:AAEX4G42x3OQRMdjvOJGAJFJdydIVDGp_PE"
-ADMIN_ID = 8502341995
+MAIN_TOKEN = "8766874600:AAEgeJveXfh95zH23GVlaHnOLuHAt5hpJUw"
+ADMIN_ID = 8603534638
 
+# НАСТРОЙКА КАНАЛОВ (для закрытых укажи ID типа -100... и ссылку-приглашение)
+# Формат: (ID_или_Юзернейм, Название_для_кнопки, Ссылка_для_перехода)
 CHANNELS = [
-    (-1004466816546, "Наш канал", "https://t.me/+ryYTkHSQG6VmNjUy"), 
+    (-1004466816546, "Канал", "https://t.me/+ryYTkHSQG6VmNjUy"), 
 ]
 
 DATA_DIR = Path("data")
@@ -57,11 +59,13 @@ class MirrorStates(StatesGroup):
 
 # ========================= БАЗА ДАННЫХ =========================
 
+db = None
+
 async def init_db():
     global db
     db = await aiosqlite.connect(DB_PATH)
     
-    # Создаем таблицу, если её вообще не было
+    # Базовая структура
     await db.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -75,21 +79,18 @@ async def init_db():
         )
     """)
     
-    # 💥 Альтер-скрипты для добавления колонок в уже существующую старую БД:
+    # Автоматическое исправление структуры для старых БД (защита от OperationalError)
     try:
         await db.execute("ALTER TABLE users ADD COLUMN premium INTEGER DEFAULT 0")
-    except aiosqlite.OperationalError:
-        pass  # Колонка уже есть
+    except aiosqlite.OperationalError: pass
         
     try:
         await db.execute("ALTER TABLE users ADD COLUMN x2_until TEXT DEFAULT NULL")
-    except aiosqlite.OperationalError:
-        pass
+    except aiosqlite.OperationalError: pass
         
     try:
         await db.execute("ALTER TABLE users ADD COLUMN keep_videos INTEGER DEFAULT 0")
-    except aiosqlite.OperationalError:
-        pass
+    except aiosqlite.OperationalError: pass
 
     # Остальные таблицы
     await db.execute("""
@@ -118,7 +119,7 @@ async def init_db():
     """)
     await db.commit()
 
-# ========================= МИДЛВАРЬ ДЛЯ БАНА =========================
+# ========================= МИДЛВАРЬ БАНА =========================
 
 router = Router()
 
@@ -210,12 +211,18 @@ def promo_menu_kb():
 # ========================= ХЕЛПЕРЫ =========================
 
 async def check_subscription(user_id: int, bot: Bot) -> bool:
-    for channel, _ in CHANNELS:
+    for channel_data in CHANNELS:
+        if isinstance(channel_data, (tuple, list)):
+            channel = channel_data[0]
+        else:
+            channel = channel_data
+            
         try:
-            member = await bot.get_chat_member(channel, user_id)
+            member = await bot.get_chat_member(chat_id=channel, user_id=user_id)
             if member.status not in ["member", "administrator", "creator"]:
                 return False
-        except Exception:
+        except Exception as e:
+            print(f"Ошибка проверки подписки на {channel}: {e}")
             return False
     return True
 
@@ -320,8 +327,6 @@ async def process_mirror_token(message: Message, state: FSMContext, bot: Bot):
     except Exception:
         await checking_msg.edit_text("❌ Ошибка на стороне Telegram.")
         await state.clear()
-
-
 
 # ========================= АДМИН ПАНЕЛЬ =========================
 
@@ -558,14 +563,13 @@ async def process_promo_activate(message: Message, state: FSMContext):
     await message.answer(f"🎉 Активирован! +<b>{reward}</b> 💎.", reply_markup=main_menu(user_id))
     await state.clear()
 
-# ========================= ОБНОВЛЕННЫЙ МАГАЗИН КАТЕГОРИЙ =========================
+# ========================= КАТЕГОРИИ МАГАЗИНА (ЗВЕЗДЫ) =========================
 
 @router.callback_query(F.data == "shop_main")
 async def shop_main(callback: CallbackQuery):
     user_id = callback.from_user.id
     udata = await get_user_data(user_id, callback.from_user.first_name)
     
-    # Текстовое описание статуса юзера
     prem_status = "❌ Нет" if udata["premium"] == 0 else ("🌟 Premium" if udata["premium"] == 1 else "🔥 Premium+")
     keep_status = "✅ Да" if udata["keep_videos"] == 1 or udata["premium"] == 2 else "❌ Нет"
     
@@ -693,7 +697,7 @@ async def buy_prem_plus(callback: CallbackQuery):
     await callback.answer("🔥 Эпично! Статус PREMIUM+ (Архивы + Бесконечные видео) активирован.", show_alert=True)
     await shop_main(callback)
 
-# ========================= ОСТАЛЬНЫЕ ОБРАБОТЧИКИ =========================
+# ========================= БАЗОВЫЕ ОБРАБОТЧИКИ =========================
 
 @router.message(Command("start"))
 async def start(message: Message, bot: Bot):
@@ -708,7 +712,6 @@ async def start(message: Message, bot: Bot):
                 if not await cur.fetchone():
                     await db.execute("UPDATE users SET referred_by = ? WHERE user_id = ?", (referrer_id, user_id))
                     
-                    # Проверяем буст рефералов х2 у пригласившего
                     ref_data = await get_user_data(referrer_id)
                     reward = 4
                     if ref_data["x2_until"]:
@@ -716,12 +719,22 @@ async def start(message: Message, bot: Bot):
                             reward = 8
                             
                     await add_diamonds(referrer_id, reward)
-                    try: await bot.send_message(referrer_id, f"🎉 Новый реферал! Вам зачислено +{reward} алмазов (сработало x2 буст!)." if reward == 8 else "🎉 Новый реферал! +4 алмаза")
+                    try: 
+                        await bot.send_message(referrer_id, f"🎉 Новый реферал! Вам зачислено +{reward} алмазов (сработало x2 буст!)." if reward == 8 else "🎉 Новый реферал! +4 алмаза")
                     except Exception: pass
                     
     if not await check_subscription(user_id, bot):
         kb = InlineKeyboardBuilder()
-        for channel, name_ch in CHANNELS: kb.button(text=name_ch, url=f"https://t.me/{channel[1:]}")
+        for channel_data in CHANNELS:
+            if isinstance(channel_data, (tuple, list)) and len(channel_data) >= 3:
+                ch_id, ch_name, ch_url = channel_data
+            else:
+                ch_id = channel_data[0] if isinstance(channel_data, (tuple, list)) else channel_data
+                ch_name = "Канал"
+                ch_url = f"https://t.me/{str(ch_id).replace('@', '')}"
+                
+            kb.button(text=ch_name, url=ch_url)
+            
         kb.button(text="✅ Я подписался", callback_data="check_sub")
         kb.adjust(1)
         return await message.answer("👋 Для работы бота подпишись на каналы:", reply_markup=kb.as_markup())
@@ -729,25 +742,20 @@ async def start(message: Message, bot: Bot):
     udata = await get_user_data(user_id, name)
     await message.answer(f"Добро пожаловать! 💎\n\nНа балансе: <b>{udata['diamonds']}</b> алмазов", reply_markup=main_menu(user_id))
 
-async def check_subscription(user_id: int, bot: Bot) -> bool:
-    for channel_data in CHANNELS:
-        if isinstance(channel_data, (tuple, list)):
-            channel = channel_data[0]
-        else:
-            channel = channel_data
-            
-        try:
-            member = await bot.get_chat_member(chat_id=channel, user_id=user_id)
-            if member.status not in ["member", "administrator", "creator"]:
-                return False
-        except Exception as e:
-            print(f"Ошибка проверки подписки на {channel}: {e}")
-            # Если бот не админ в закрытом канале, тут вылетит ошибка, и мы вернем False
-            return False
-    return True
+@router.callback_query(F.data == "check_sub")
+async def check_sub(callback: CallbackQuery, bot: Bot):
+    user_id = callback.from_user.id
+    name = callback.from_user.first_name
+    if await check_subscription(user_id, bot):
+        await callback.message.edit_text("✅ Подписка подтверждена!", reply_markup=main_menu(user_id))
+    else:
+        await callback.answer("❌ Ты не подписался!", show_alert=True)
 
+@router.callback_query(F.data == "watch")
+async def watch(callback: CallbackQuery, bot: Bot):
+    user_id = callback.from_user.id
+    udata = await get_user_data(user_id, callback.from_user.first_name)
     
-    # Если премиум — просмотр бесплатный
     if udata["premium"] == 0:
         if udata["diamonds"] < 6: return await callback.answer("❌ Недостаточно алмазов (нужно 6)", show_alert=True)
         await db.execute("UPDATE users SET diamonds = diamonds - 6 WHERE user_id = ?", (user_id,))
@@ -757,8 +765,6 @@ async def check_subscription(user_id: int, bot: Bot) -> bool:
     if not videos: return await callback.answer("❌ Нет видео в папке data/media", show_alert=True)
     
     video_path = random.choice(videos)
-    
-    # Если у пользователя вечное видео или Premium+, оно не удалится
     is_forever = (udata["keep_videos"] == 1 or udata["premium"] == 2)
     caption_text = "📹 Вот твоё видео!\n\n⭐️ У вас подписка: видео останется навсегда!" if is_forever else "📹 Вот твоё видео!\n\n🕒 Оно удалится через 30 минут."
     
@@ -775,7 +781,6 @@ async def watch_photo(callback: CallbackQuery, bot: Bot):
     user_id = callback.from_user.id
     udata = await get_user_data(user_id, callback.from_user.first_name)
     
-    # Если премиум — просмотр бесплатный
     if udata["premium"] == 0:
         if udata["diamonds"] < 3: return await callback.answer("❌ Недостаточно алмазов (нужно 3)", show_alert=True)
         await db.execute("UPDATE users SET diamonds = diamonds - 3 WHERE user_id = ?", (user_id,))
@@ -786,7 +791,6 @@ async def watch_photo(callback: CallbackQuery, bot: Bot):
     if not photos: return await callback.answer("❌ Нет фото в папке data/photo", show_alert=True)
     
     try:
-        # Для Premium+ указываем, что это из «архивов»
         cap = "📸 Ваше случайное фото из архивов!" if udata["premium"] == 2 else "📸 Ваше случайное фото!"
         await bot.send_photo(chat_id=user_id, photo=FSInputFile(random.choice(photos)), caption=cap)
         await callback.answer("✅ Отправлено!")
@@ -810,7 +814,6 @@ async def menu_handlers(callback: CallbackQuery, bot: Bot):
 async def restart_server_cmd(message: Message):
     if message.from_user.id != ADMIN_ID: return
     await message.answer("🔄 Выполняю полную перезагрузку ядра сервера...")
-    import os, sys
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
 # ========================= ЗАПУСК СИСТЕМЫ С МУЛЬТИБОТОМ =========================
@@ -839,12 +842,10 @@ async def main():
     await init_db()
     dp.include_router(router)
 
-    # Запуск основного бота
     main_bot = Bot(token=MAIN_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     active_bots[MAIN_TOKEN] = main_bot
     asyncio.create_task(start_bot_polling(main_bot))
     
-    # Запуск сохраненных зеркал из БД
     async with db.execute("SELECT token FROM mirrors") as cur: mirrors = await cur.fetchall()
     for (token,) in mirrors:
         if token in active_bots: continue
@@ -854,7 +855,6 @@ async def main():
             asyncio.create_task(start_bot_polling(mirror_bot))
         except Exception: pass
 
-    # Запускаем фоновую таску удаления видео
     asyncio.create_task(delete_old_videos(main_bot))
     
     print("🚀 Мультибот-платформа на Telegram Stars успешно запущена!")
