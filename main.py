@@ -20,7 +20,7 @@ from aiogram.exceptions import TelegramBadRequest, TelegramUnauthorizedError
 
 # СЮДА МОЖНО ЗАПИСЫВАТЬ МНОГО ТОКЕНОВ (Все эти боты будут главными и запустятся сразу)
 MAIN_TOKENS = [
-    "8766874600:AAEgeJveXfh95zH23GVlaHnOLuHAt5hpJUw",
+    "8971264936:AAEX4G42x3OQRMdjvOJGAJFJdydIVDGp_PE",
     "8912981144:AAEEWlyv51KMaVk2mehQubIyigRg10YkoL8",
     # "ТРЕТИЙ_ТОКЕН_СЮДА",
 ]
@@ -29,8 +29,8 @@ ADMIN_ID = 8603534638
 
 # НАСТРОЙКА КАНАЛОВ (для закрытых укажи ID типа -100... и ссылку-приглашение)
 CHANNELS = [
-    ("@zemelya_new", "Публичный Канал 1", "https://t.me/zemelya_new"),
-    (-1002147483647, "Закрытый Канал 2", "https://t.me/+твой_инвайт_линк"), 
+    ("@PavelGiftsPG, "Спонсор", "https://t.me/PavelGiftsPG"),
+    (-1004466816546, "Наш канал", "https://t.me/https://t.me/+ryYTkHSQG6VmNjUy"), 
 ]
 
 DATA_DIR = Path("data")
