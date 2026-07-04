@@ -20,7 +20,7 @@ from aiogram.exceptions import TelegramBadRequest
 # ========================= НАСТРОЙКИ МУЛЬТИБОТА =========================
 
 MAIN_TOKENS = [
-    "8971264936:AAEX4G42x3OQRMdjvOJGAJFJdydIVDGp_PE",
+    "8971264936:AAGnz7N90o_T1_EUEa694KTZThdFWGFhqgI",
     "8749652033:AAGxEa4xA2BU9wEUUcntIH3MfEoRVBniiwQ",
 ]
 
