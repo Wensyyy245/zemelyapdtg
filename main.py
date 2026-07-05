@@ -1439,18 +1439,17 @@ async def delete_old_videos():
 
 # ========================= МУЛЬТИ-ПОЛЛИНГ ЯДРО БОТА =========================
 
-async def main():
-    global GLOBAL_BOTS_POOL
-    await init_db()
-    
-    dp = Dispatcher()
-    dp.include_router(router)
-    
-    @dp.pre_checkout_query()
-    async def global_pre_checkout(pre_checkout_query: PreCheckoutQuery):
-        await pre_checkout_query.answer(ok=True)
+# ========================= ГЛАВНЫЙ ЗАПУСК СИСТЕМЫ =========================
 
-    @dp.message(F.successful_payment)
+async def main():
+    await init_db()
+    dp = Dispatcher()
+    
+    # Правильное подключение кастомной мидлвари в Aiogram 3.x
+    dp.update.outer_middleware(BanMiddleware())
+    dp.include_router(router)
+
+       @dp.message(F.successful_payment)
     async def global_successful_payment(message: Message):
         payload = message.successful_payment.invoice_payload
         if payload.startswith("buy_diamonds:"):
@@ -1459,25 +1458,24 @@ async def main():
             await add_diamonds(message.from_user.id, float(diamonds))
             x3_msg = " [⚡️ Сработал Ивент Х3!]" if await is_event_active("global_x3_stars_until") else ""
             await message.answer(f"🎉 <b>Оплата зачислена!</b> +<b>{diamonds}</b> 💎.{x3_msg}")
-
-    print(f"⏳ Проверка основного списка токенов...")
+    
+    print("🚀 Запуск пула мультиботов...")
     for token in MAIN_TOKENS:
         try:
-            bot_instance = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-            bot_user = await bot_instance.get_me()
-            await bot_instance.delete_webhook(drop_pending_updates=True)
+            bot_instance = Bot(token=token, properties=DefaultBotProperties(parse_mode=ParseMode.HTML))
             GLOBAL_BOTS_POOL.append(bot_instance)
-            print(f"✅ Бот @{bot_user.username} добавлен в пул.")
+            await bot_instance.delete_webhook(drop_pending_updates=True)
+            asyncio.create_task(dp.start_polling(bot_instance, allowed_updates=dp.resolve_used_update_types()))
+            print(f"✅ Бот [{token.split(':')[0]}] успешно запущен.")
         except Exception as e:
-            print(f"❌ Ошибка токена {token[:15]}: {e}")
-
-    if not GLOBAL_BOTS_POOL:
-        print("❌ КРИТИЧЕСКАЯ ОШИБКА: Нет валидных токенов.")
-        return
-
-    asyncio.create_task(delete_old_videos())
-    await dp.start_polling(*GLOBAL_BOTS_POOL)
+            print(f"❌ Ошибка запуска бота с токеном {token.split(':')[0]}: {e}")
+            
+    print("🤖 Все боты активны. Ожидание событий...")
+    while True:
+        await asyncio.sleep(3600)
 
 if __name__ == "__main__":
-    try: asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit): print("Выключение ядра.")
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        print("🛑 Бот остановлен.")
