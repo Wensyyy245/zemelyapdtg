@@ -85,6 +85,7 @@ async def init_db():
     global db
     db = await aiosqlite.connect(DB_PATH)
     
+    # 1. Создаем таблицу, если её вообще не было
     await db.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -100,6 +101,16 @@ async def init_db():
         )
     """)
     
+    # 2. МИГРАЦИЯ: Добавляем колонку banned_until, если таблица уже существовала без неё
+    try:
+        await db.execute("ALTER TABLE users ADD COLUMN banned_until INTEGER DEFAULT 0")
+        await db.commit()
+        print("✅ База данных успешно обновлена: добавлена колонка banned_until")
+    except aiosqlite.OperationalError:
+        # Если колонка уже есть, SQLite выдаст ошибку, просто игнорируем её
+        pass
+        
+    # Остальной ваш код инициализации таблиц...
     await db.execute("""
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
