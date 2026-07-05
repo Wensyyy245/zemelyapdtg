@@ -85,7 +85,7 @@ async def init_db():
     global db
     db = await aiosqlite.connect(DB_PATH)
     
-    # 1. Создаем таблицу, если её вообще не было
+    # 1. Создаем таблицу, если её не было
     await db.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -101,16 +101,23 @@ async def init_db():
         )
     """)
     
-    # 2. МИГРАЦИЯ: Добавляем колонку banned_until, если таблица уже существовала без неё
+    # 2. МИГРАЦИЯ: Добавляем колонку banned_until (для временного бана)
     try:
         await db.execute("ALTER TABLE users ADD COLUMN banned_until INTEGER DEFAULT 0")
         await db.commit()
-        print("✅ База данных успешно обновлена: добавлена колонка banned_until")
+        print("✅ Миграция: добавлена колонка banned_until")
     except aiosqlite.OperationalError:
-        # Если колонка уже есть, SQLite выдаст ошибку, просто игнорируем её
+        pass
+
+    # 3. МИГРАЦИЯ: Добавляем колонку is_referral_rewarded (защита рефералов от абуза)
+    try:
+        await db.execute("ALTER TABLE users ADD COLUMN is_referral_rewarded INTEGER DEFAULT 0")
+        await db.commit()
+        print("✅ Миграция: добавлена колонка is_referral_rewarded")
+    except aiosqlite.OperationalError:
         pass
         
-    # Остальной ваш код инициализации таблиц...
+    # Инициализация остальных таблиц
     await db.execute("""
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
