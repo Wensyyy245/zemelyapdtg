@@ -975,40 +975,87 @@ async def adm_unban(callback: CallbackQuery, state: FSMContext):
 
 # ========================= ПРОСМОТР И ОЧИСТКА ПРОМОКОДОВ (АДМИН) =========================
 
+# ========================= ПРОСМОТР И ОЧИСТКА ПРОМОКОДОВ (АДМИН) =========================
+
 @router.callback_query(F.data == "admin_active_promos")
 async def admin_active_promos(callback: CallbackQuery):
-    if callback.from_user.id not in ADMIN_IDS: return
+    if callback.from_user.id not in ADMIN_IDS: 
+        return await callback.answer("❌ У вас нет прав администратора!", show_alert=True)
     
-    async with db.execute("SELECT code, reward, uses_left, creator_id FROM promo_codes") as cur:
-        promos = await cur.fetchall()
-        
-    if not promos:
+    # Мгновенно гасим анимацию загрузки кнопки в Telegram
+    await callback.answer()
+    
+    try:
+        async with db.execute("SELECT code, reward, uses_left, creator_id FROM promo_codes") as cur:
+            promos = await cur.fetchall()
+            
+        if not promos:
+            kb = InlineKeyboardBuilder()
+            kb.button(text="◀️ Назад в Админку", callback_data="admin_enter")
+            return await callback.message.edit_text(
+                "🎫 <b>Активных промокодов нет.</b>\n\nБаза данных чиста от кодов.", 
+                reply_markup=kb.as_markup(),
+                parse_mode=ParseMode.HTML
+            )
+            
+        text = "🎫 <b>Список активных промокодов:</b>\n\nНажмите на кнопку под сообщением, чтобы удалить промокод.\n\n"
         kb = InlineKeyboardBuilder()
+        
+        for code, reward, uses_left, creator in promos:
+            text += f"▪️ Код: <code>{code}</code> | Награда: <b>{reward} 💎</b> | Осталось: <b>{uses_left} шт.</b> (ID: <code>{creator}</code>)\n"
+            kb.button(text=f"❌ Удалить {code}", callback_data=f"adm_del_promo_{code}")
+            
         kb.button(text="◀️ Назад в Админку", callback_data="admin_enter")
-        return await callback.message.edit_text("🎫 <b>Активных промокодов нет.</b>\n\nБаза данных чиста от кодов.", reply_markup=kb.as_markup())
+        kb.adjust(1)
         
-    text = "🎫 <b>Список активных промокодов:</b>\n\nНажмите на кнопку под сообщением, чтобы удалить промокод.\n\n"
-    kb = InlineKeyboardBuilder()
-    
-    for code, reward, uses_left, creator in promos:
-        text += f"▪️ Код: <code>{code}</code> | Награда: <b>{reward} 💎</b> | Осталось: <b>{uses_left} шт.</b> (ID: <code>{creator}</code>)\n"
-        kb.button(text=f"❌ Удалить {code}", callback_data=f"adm_del_promo_{code}")
+        await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup())
         
-    kb.button(text="◀️ Назад в Админку", callback_data="admin_enter")
-    kb.adjust(1)
-    
-    await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup())
+    except Exception as e:
+        logging.error(f"Ошибка вывода промокодов: {e}")
+        await callback.message.answer("⚠️ Ошибка при чтении списка промокодов из базы данных.")
 
 @router.callback_query(F.data.startswith("adm_del_promo_"))
 async def admin_delete_promo_callback(callback: CallbackQuery):
-    if callback.from_user.id not in ADMIN_IDS: return
+    if callback.from_user.id not in ADMIN_IDS: 
+        return await callback.answer("❌ У вас нет прав!", show_alert=True)
+        
     promo_code = callback.data.replace("adm_del_promo_", "")
     
-    await db.execute("DELETE FROM promo_codes WHERE code = ?", (promo_code,))
-    await db.commit()
-    
-    await callback.answer(f"✅ Промокод {promo_code} удален!", show_alert=True)
-    await admin_active_promos(callback)
+    try:
+        await db.execute("DELETE FROM promo_codes WHERE code = ?", (promo_code,))
+        await db.commit()
+        
+        # Показываем всплывающее уведомление об успешном удалении
+        await callback.answer(f"✅ Промокод {promo_code} успешно удален!", show_alert=True)
+        
+        # Обновляем список промокодов на экране
+        async with db.execute("SELECT code, reward, uses_left, creator_id FROM promo_codes") as cur:
+            promos = await cur.fetchall()
+            
+        if not promos:
+            kb = InlineKeyboardBuilder()
+            kb.button(text="◀️ Назад в Админку", callback_data="admin_enter")
+            return await callback.message.edit_text(
+                "🎫 <b>Активных промокодов нет.</b>\n\nБаза данных чиста от кодов.", 
+                reply_markup=kb.as_markup(),
+                parse_mode=ParseMode.HTML
+            )
+            
+        text = "🎫 <b>Список активных промокодов:</b>\n\nНажмите на кнопку под сообщением, чтобы удалить промокод.\n\n"
+        kb = InlineKeyboardBuilder()
+        
+        for code, reward, uses_left, creator in promos:
+            text += f"▪️ Код: <code>{code}</code> | Награда: <b>{reward} 💎</b> | Осталось: <b>{uses_left} шт.</b> (ID: <code>{creator}</code>)\n"
+            kb.button(text=f"❌ Удалить {code}", callback_data=f"adm_del_promo_{code}")
+            
+        kb.button(text="◀️ Назад в Админку", callback_data="admin_enter")
+        kb.adjust(1)
+        
+        await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup())
+        
+    except Exception as e:
+        logging.error(f"Ошибка при удалении промокода: {e}")
+        await callback.answer("⚠️ Не удалось удалить промокод.", show_alert=True)
 
 # ========================= ИНСТРУМЕНТ СОЗДАНИЯ ЗАДАНИЙ (АДМИН) =========================
 
