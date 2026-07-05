@@ -254,33 +254,32 @@ async def broadcast_event_start(title: str, description: str, duration_hours: in
 
 router = Router()
 
-@router.message.outer_middleware()
-@router.callback_query.outer_middleware()
-async def ban_middleware(handler, event, data):
-    user = data.get("event_from_user")
-    if user:
-        async with db.execute("SELECT is_banned, banned_until, diamonds, premium FROM users WHERE user_id = ?", (user.id,)) as cur:
-            row = await cur.fetchone()
-            if row:
-                is_banned, banned_until, diamonds, premium = row
-                
-                # АВТОМАТИЧЕСКИЙ СБРОС ПРЕМИУМА ПРИ ОТРИЦАТЕЛЬНОМ БАЛАНСЕ
-                if diamonds < 0 and premium > 0:
-                    await db.execute("UPDATE users SET premium = 0, keep_videos = 0 WHERE user_id = ?", (user.id,))
-                    await db.commit()
-                    premium = 0
-                
-                current_ts = int(time.time())
-                if is_banned == 1 or (banned_until > 0 and banned_until > current_ts):
-                    time_left_str = "навсегда" if banned_until == 0 else f"до {datetime.fromtimestamp(banned_until).strftime('%d.%m %H:%M')}"
-                    if isinstance(event, CallbackQuery):
-                        try: await event.answer(f"❌ Доступ заблокирован {time_left_str}!", show_alert=True)
-                        except Exception: pass
-                    elif isinstance(event, Message):
-                        try: await event.answer(f"❌ <b>Ваш аккаунт заблокирован администратором {time_left_str}!</b>")
-                        except Exception: pass
-                    return
-    return await handler(event, data)
+# Новый правильный класс мидлвари без ломающих декораторов
+class BanMiddleware(BaseMiddleware):
+    async def __call__(self, handler, event, data):
+        user = data.get("event_from_user")
+        if user:
+            async with db.execute("SELECT is_banned, banned_until, diamonds, premium FROM users WHERE user_id = ?", (user.id,)) as cur:
+                row = await cur.fetchone()
+                if row:
+                    is_banned, banned_until, diamonds, premium = row
+                    
+                    if diamonds < 0 and premium > 0:
+                        await db.execute("UPDATE users SET premium = 0, keep_videos = 0 WHERE user_id = ?", (user.id,))
+                        await db.commit()
+                        premium = 0
+                    
+                    current_ts = int(time.time())
+                    if is_banned == 1 or (banned_until > 0 and banned_until > current_ts):
+                        time_left_str = "навсегда" if banned_until == 0 else f"до {datetime.fromtimestamp(banned_until).strftime('%d.%m %H:%M')}"
+                        if isinstance(event, CallbackQuery):
+                            try: await event.answer(f"❌ Доступ заблокирован {time_left_str}!", show_alert=True)
+                            except Exception: pass
+                        elif isinstance(event, Message):
+                            try: await event.answer(f"❌ <b>Ваш аккаунт заблокирован администратором {time_left_str}!</b>")
+                            except Exception: pass
+                        return
+        return await handler(event, data)
 
 async def check_subscription(user_id: int, bot: Bot) -> bool:
     for channel_data in CHANNELS:
