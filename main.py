@@ -9,7 +9,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import aiosqlite
-# ИСПРАВЛЕНО: Добавлен BaseMiddleware в импорт, чтобы кнопки снова ожили!
 from aiogram import Bot, Dispatcher, F, Router, BaseMiddleware
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -178,7 +177,7 @@ async def init_db():
     """)
     await db.commit()
 
-# ========================= ХЕЛПЕРЫ И ЗАЗАЩИТА БАЛАНСА =========================
+# ========================= ХЕЛПЕРЫ И ЗАЩИТА БАЛАНСА =========================
 
 async def get_setting(key: str) -> str:
     async with db.execute("SELECT value FROM settings WHERE key = ?", (key,)) as cur:
@@ -251,6 +250,7 @@ async def broadcast_event_start(title: str, description: str, duration_hours: in
 
 router = Router()
 
+# Правильный класс мидлвари
 class BanMiddleware(BaseMiddleware):
     async def __call__(self, handler, event, data):
         user = data.get("event_from_user")
@@ -596,7 +596,7 @@ async def check_task_status(callback: CallbackQuery, bot: Bot):
     else:
         await callback.answer("❌ Вы не подписались на канал спонсора или не открыли бота в нем!", show_alert=True)
 
-# ========================= ПРОСМОТР МЕДИАФАЙЛОВ =========================
+# ========================= АНТИ-ДЮП ПРОСМОТР МЕДИАФАЙЛОВ =========================
 
 @router.callback_query(F.data == "watch")
 async def watch(callback: CallbackQuery, bot: Bot):
@@ -666,7 +666,7 @@ async def watch_photo(callback: CallbackQuery, bot: Bot):
     await bot.send_photo(chat_id=user_id, photo=FSInputFile(random.choice(photos)), caption="🍀 Счастливый час: +2 💎!" if is_lucky else None)
     await callback.answer()
 
-# ========================= ПРОМОКОДЫ И ЧЕКИ =========================
+# ========================= АНТИ-ДЮП ПРОМОКОДЫ И ЧЕКИ =========================
 
 @router.callback_query(F.data == "promo_menu")
 async def promo_menu(callback: CallbackQuery):
@@ -675,6 +675,7 @@ async def promo_menu(callback: CallbackQuery):
         row = await cur.fetchone()
     if row and row[0] < 0:
         return await callback.message.answer("❌ <b>Доступ к чекам и промокодам заблокирован, пока ваш баланс отрицательный!</b>")
+
     kb = InlineKeyboardBuilder()
     kb.button(text="🎫 Активировать промокод", callback_data="promo_activate")
     kb.button(text="➕ Создать промокод", callback_data="promo_create")
@@ -693,21 +694,22 @@ async def process_promo_activate(message: Message, state: FSMContext):
     code = message.text.strip().upper()
     user_id = message.from_user.id
     await state.clear()
-    async with db.execute("SELECT creator_id, reward, uses_left FROM promo_codes WHERE code = ?", (code,)) as cur:
+    
+    async with db.execute("SELECT creator_id, reward, uses_left FROM promo_codes WHERE code = ?", (code,)) as cur: 
         row = await cur.fetchone()
     if not row: return await message.answer("❌ Промокод не найден.")
+        
     cid, reward, left = row
     if left <= 0: return await message.answer("❌ Промокод закончился.")
     if cid == user_id: return await message.answer("❌ Вы не можете активировать собственный промокод.")
     
     async with db.execute("SELECT 1 FROM promo_activations WHERE user_id = ? AND code = ?", (user_id, code)) as cur:
         if await cur.fetchone(): return await message.answer("❌ Вы уже активировали этот промокод ранее!")
-        
+            
     await db.execute("INSERT INTO promo_activations VALUES (?, ?)", (user_id, code))
-    if left - 1 == 0:
-        await db.execute("DELETE FROM promo_codes WHERE code = ?", (code,))
-    else:
-        await db.execute("UPDATE promo_codes SET uses_left = uses_left - 1 WHERE code = ?", (code,))
+    if left - 1 == 0: await db.execute("DELETE FROM promo_codes WHERE code = ?", (code,))
+    else: await db.execute("UPDATE promo_codes SET uses_left = uses_left - 1 WHERE code = ?", (code,))
+        
     await add_diamonds(user_id, float(reward))
     await db.commit()
     await message.answer(f"🎉 <b>Промокод успешно активирован!</b>\nНа ваш баланс зачислено: +<b>{reward}</b> 💎")
@@ -717,7 +719,9 @@ async def promo_create(callback: CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     async with db.execute("SELECT diamonds FROM users WHERE user_id = ?", (user_id,)) as cur:
         row = await cur.fetchone()
-    if row and row[0] < 0: return await callback.answer("❌ Нельзя создавать промокоды с отрицательным балансом!", show_alert=True)
+    if row and row[0] < 0:
+        return await callback.answer("❌ Нельзя создавать промокоды с отрицательным балансом!", show_alert=True)
+
     await callback.message.edit_text("✨ Введите текст промокода (слово/код):")
     await state.set_state(PromoStates.create_code)
 
@@ -730,9 +734,10 @@ async def process_promo_code(message: Message, state: FSMContext):
 @router.message(PromoStates.create_reward)
 async def process_promo_reward(message: Message, state: FSMContext):
     text = message.text.strip()
-    if not text.isdigit() or int(text) <= 0:
+    if not text.isdigit() or int(text) <= 0: 
         await state.clear()
         return await message.answer("❌ Ошибка: награда должна быть целым положительным числом! Операция отменена.")
+        
     await state.update_data(reward=int(text))
     await message.answer("👥 Кол-во людей, которые смогут его активировать:")
     await state.set_state(PromoStates.create_uses)
@@ -740,16 +745,18 @@ async def process_promo_reward(message: Message, state: FSMContext):
 @router.message(PromoStates.create_uses)
 async def process_promo_uses(message: Message, state: FSMContext):
     text = message.text.strip()
-    if not text.isdigit() or int(text) <= 0:
+    if not text.isdigit() or int(text) <= 0: 
         await state.clear()
         return await message.answer("❌ Ошибка: количество использований должно быть положительным!")
+        
     uses = int(text)
     data = await state.get_data()
     total = data['reward'] * uses
     
     async with db.execute("SELECT diamonds FROM users WHERE user_id = ?", (message.from_user.id,)) as cur:
         bal = await cur.fetchone()
-    if not bal or bal[0] < total or bal[0] < 0:
+        
+    if not bal or bal[0] < total or bal[0] < 0: 
         await state.clear()
         return await message.answer(f"❌ Недостаточно 💎 или баланс отрицательный! Требуется: {total} 💎")
         
@@ -774,14 +781,16 @@ async def check_create(callback: CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     async with db.execute("SELECT diamonds FROM users WHERE user_id = ?", (user_id,)) as cur:
         row = await cur.fetchone()
-    if row and row[0] < 0: return await callback.answer("❌ Нельзя создавать чеки с отрицательным балансом!", show_alert=True)
+    if row and row[0] < 0:
+        return await callback.answer("❌ Нельзя создавать чеки с отрицательным балансом!", show_alert=True)
+
     await callback.message.edit_text("🧾 <b>Создание алмазного чека</b>\n\nВведите количество алмазов, которое получит <b>один</b> человек (целое положительное):")
     await state.set_state(CheckStates.create_diamonds)
 
 @router.message(CheckStates.create_diamonds)
 async def process_check_diamonds(message: Message, state: FSMContext):
     text = message.text.strip()
-    if not text.isdigit() or int(text) <= 0:
+    if not text.isdigit() or int(text) <= 0: 
         await state.clear()
         return await message.answer("❌ Ошибка: номинал чека должен быть строго целым положительным числом!")
     await state.update_data(diamonds=int(text))
@@ -791,9 +800,10 @@ async def process_check_diamonds(message: Message, state: FSMContext):
 @router.message(CheckStates.create_uses)
 async def process_check_uses(message: Message, state: FSMContext):
     text = message.text.strip()
-    if not text.isdigit() or int(text) <= 0:
+    if not text.isdigit() or int(text) <= 0: 
         await state.clear()
         return await message.answer("❌ Ошибка: число человек должно быть положительным!")
+        
     uses = int(text)
     data = await state.get_data()
     diamonds_per_use = data['diamonds']
@@ -801,6 +811,7 @@ async def process_check_uses(message: Message, state: FSMContext):
     
     async with db.execute("SELECT diamonds FROM users WHERE user_id = ?", (message.from_user.id,)) as cur:
         bal = await cur.fetchone()
+        
     if not bal or bal[0] < total_needed or bal[0] < 0:
         await state.clear()
         return await message.answer(f"❌ У вас недостаточно алмазов или баланс меньше нуля. Требуется: {total_needed} 💎")
@@ -819,265 +830,643 @@ async def process_check_uses(message: Message, state: FSMContext):
         f"💰 <b>Номинал:</b> <code>{diamonds_per_use}</code> 💎 на человека\n"
         f"👥 <b>Количество активаций:</b> <code>{uses}</code>\n"
         f"💎 <b>Всего выделено:</b> <code>{total_needed}</code> 💎\n\n"
-        f"🔗 <b>Ссылка для активации чека:</b>\n<code>{check_link}</code>"
+        f"🔗 <b>Ссылка для активации чека:</b>\n"
+        f"<code>{check_link}</code>\n\n"
+        f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
+        f"📢 <i>Отправьте эту ссылку другу или в чат. Кто перейдет по ней, мгновенно заберет награду!</i>"
     )
     await message.answer(beautiful_check_text, reply_markup=main_menu(message.from_user.id))
 
-# ========================= МАГАЗИН И TELEGRAM STARS =========================
+# ========================= ТАБЛИЦА ЛИДЕРОВ (ТОП-10 С АЙДИ) =========================
 
-@router.callback_query(F.data == "shop_main")
-async def shop_main(callback: CallbackQuery):
-    await callback.message.edit_text("🛒 <b>Добро пожаловать в магазин бота!</b>\n\nВыбирайте интересующую вас категорию товаров:", reply_markup=shop_categories_kb())
-
-@router.callback_query(F.data == "cat_diamonds")
-async def cat_diamonds(callback: CallbackQuery):
-    pct = 0
-    if await is_event_active("global_discount_until"):
-        try: pct = int(await get_setting("global_discount_percent"))
-        except: pct = 30
-    timer = await get_event_remaining_time("global_discount_until")
-    await callback.message.edit_text("💎 <b>Пополнение алмазов через Telegram Stars</b>\n\nКурс обмена: <b>1 алмаз = 0.5 ⭐️ Звезды</b>\nВыберите пакет:", reply_markup=shop_diamonds_kb(pct, timer))
-
-@router.callback_query(F.data == "cat_abilities")
-async def cat_abilities(callback: CallbackQuery):
-    pct = 0
-    if await is_event_active("global_discount_until"):
-        try: pct = int(await get_setting("global_discount_percent"))
-        except: pct = 30
-    timer = await get_event_remaining_time("global_discount_until")
-    await callback.message.edit_text("⚡ <b>Улучшения профиля и суперспособности</b>\n\nПокупаются за алмазы с баланса:", reply_markup=shop_abilities_kb(pct, timer))
-
-@router.callback_query(F.data == "cat_premium")
-async def cat_premium(callback: CallbackQuery):
-    pct = 0
-    if await is_event_active("global_discount_until"):
-        try: pct = int(await get_setting("global_discount_percent"))
-        except: pct = 30
-    timer = await get_event_remaining_time("global_discount_until")
-    await callback.message.edit_text("👑 <b>Премиум статусы в боте</b>\n\nДают полный доступ ко всем функциям бесплатно:", reply_markup=shop_premium_kb(pct, timer))
-
-# Обработка оплаты Звездами
-@router.callback_query(F.data.startswith("stars_"))
-async def process_stars_buy(callback: CallbackQuery, state: FSMContext, bot: Bot):
-    plan = callback.data.split("_")[1]
-    user_id = callback.from_user.id
-    
-    pct = 0
-    if await is_event_active("global_discount_until"):
-        try: pct = int(await get_setting("global_discount_percent"))
-        except: pct = 30
+@router.callback_query(F.data == "leaderboard")
+async def leaderboard_menu(callback: CallbackQuery):
+    async with db.execute("SELECT user_id, first_name, diamonds FROM users WHERE diamonds >= 0 ORDER BY diamonds DESC LIMIT 10") as cur: 
+        rows = await cur.fetchall()
         
-    if plan == "custom":
-        await callback.message.edit_text("✍️ Введите количество алмазов, которое хотите купить (целое число от 10 до 5000):")
-        await state.set_state(ShopStates.custom_diamonds)
-        return
+    if not rows:
+        kb = InlineKeyboardBuilder().button(text="◀️ Назад", callback_data="back_main")
+        return await callback.message.edit_text("🏆 <b>Список лидеров пуст.</b>", reply_markup=kb.as_markup())
         
-    diamonds = int(plan)
-    stars_cost = int(diamonds * 0.5)
-    if pct > 0: stars_cost = int(stars_cost * (1 - pct / 100))
-    if stars_cost < 1: stars_cost = 1
+    text = "🏆 <b>ТОП-10 ИГРОКОВ ПО АЛМАЗАМ</b> 🏆\n\n"
+    medals = {1: "🥇", 2: "🥈", 3: "🥉"}
     
-    prices = [LabeledPrice(label=f"Покупка {diamonds} 💎", amount=stars_cost)]
-    try:
-        await bot.send_invoice(
-            chat_id=user_id,
-            title=f"Покупка {diamonds} Алмазов",
-            description=f"Зачисление {diamonds} алмазов на игровой баланс бота.",
-            payload=f"buy_diamonds:{diamonds}",
-            provider_token="", # Оставляем пустым для Telegram Stars!
-            currency="XTR",
-            prices=prices
-        )
-        await callback.answer()
-    except Exception as e:
-        await callback.answer(f"Ошибка выставления счета: {e}", show_alert=True)
+    for i, (uid, name, diamonds) in enumerate(rows, 1):
+        place = medals.get(i, f"{i}.")
+        text += f"{place} {name} <code>(ID: {uid})</code> — <b>{diamonds} 💎</b>\n"
+        
+    kb = InlineKeyboardBuilder()
+    kb.button(text="◀️ Назад в меню", callback_data="back_main")
+    await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup())
 
-@router.message(ShopStates.custom_diamonds)
-async def process_custom_diamonds_amount(message: Message, state: FSMContext, bot: Bot):
-    text = message.text.strip()
-    await state.clear()
-    if not text.isdigit() or int(text) < 10 or int(text) > 5000:
-        return await message.answer("❌ Ошибка: количество алмазов должно быть числом от 10 до 5000!")
-        
-    diamonds = int(text)
-    stars_cost = int(diamonds * 0.5)
-    
-    pct = 0
-    if await is_event_active("global_discount_until"):
-        try: pct = int(await get_setting("global_discount_percent"))
-        except: pct = 30
-    if pct > 0: stars_cost = int(stars_cost * (1 - pct / 100))
-    if stars_cost < 1: stars_cost = 1
-    
-    prices = [LabeledPrice(label=f"Покупка {diamonds} 💎", amount=stars_cost)]
-    try:
-        await bot.send_invoice(
-            chat_id=message.from_user.id,
-            title=f"Покупка {diamonds} Алмазов",
-            description=f"Зачисление индивидуального пакета {diamonds} алмазов на баланс.",
-            payload=f"buy_diamonds:{diamonds}",
-            provider_token="",
-            currency="XTR",
-            prices=prices
-        )
-    except Exception as e:
-        await message.answer(f"❌ Ошибка платежной системы: {e}")
-
-# Покупка способностей за алмазы баланса
-@router.callback_query(F.data.startswith("buy_"))
-async def process_buy_item_diamonds(callback: CallbackQuery):
-    item = callback.data.replace("buy_", "")
-    user_id = callback.from_user.id
-    
-    prices = {"boost_x2": 50, "keep_videos": 500, "prem_normal": 1500, "prem_plus": 2000}
-    if item not in prices: return await callback.answer("Товар не найден.")
-    
-    cost = prices[item]
-    if await is_event_active("global_discount_until"):
-        try:
-            pct = int(await get_setting("global_discount_percent"))
-            cost = int(cost * (1 - pct / 100))
-        except: pass
-        
-    async with db.execute("SELECT diamonds FROM users WHERE user_id = ?", (user_id,)) as cur:
-        row = await cur.fetchone()
-    if not row or row[0] < cost:
-        return await callback.answer(f"❌ Недостаточно алмазов! Требуется {cost} 💎", show_alert=True)
-        
-    await db.execute("UPDATE users SET diamonds = diamonds - ? WHERE user_id = ? AND diamonds >= ?", (cost, user_id, cost))
-    
-    if item == "boost_x2":
-        until = (datetime.now() + timedelta(hours=24)).isoformat()
-        await db.execute("UPDATE users SET x2_until = ? WHERE user_id = ?", (until, user_id))
-        msg = "🚀 Вы успешно купили буст х2 на 24 часа!"
-    elif item == "keep_videos":
-        await db.execute("UPDATE users SET keep_videos = 1 WHERE user_id = ?", (user_id,))
-        msg = "♾ Поздравляем! Теперь просмотренные видео не будут удаляться из вашего чата."
-    elif item == "prem_normal":
-        await db.execute("UPDATE users SET premium = 1 WHERE user_id = ?", (user_id,))
-        msg = "🌟 Вам выдан статус ПРЕМИУМ! Весь контент теперь бесплатный."
-    elif item == "prem_plus":
-        await db.execute("UPDATE users SET premium = 2, keep_videos = 1 WHERE user_id = ?", (user_id,))
-        msg = "🔥 Вам выдан супер-статус ПРЕМИУМ+! Всё бесплатно, видео сохраняются навсегда."
-        
-    await db.commit()
-    await callback.message.answer(msg)
-    await callback.answer()
-
-# Навигация назад
-@router.callback_query(F.data == "back_main")
-async def back_to_main(callback: CallbackQuery):
-    await callback.message.edit_text(f"👋 Главное меню бота. Выберите раздел:", reply_markup=main_menu(callback.from_user.id))
-
-# ========================= АДМИН-ПАНЕЛЬ И ИВЕНТЫ =========================
+# ========================= АДМИНИСТРАТИВНАЯ ПАНЕЛЬ И УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ =========================
 
 @router.callback_query(F.data == "admin_enter")
 async def admin_enter(callback: CallbackQuery):
-    if callback.from_user.id not in ADMIN_IDS: return await callback.answer("Отказано в доступе.", show_alert=True)
-    await callback.message.edit_text("⚙️ <b>Панель управления проектом Swill Way</b>", reply_markup=admin_menu())
+    if callback.from_user.id in ADMIN_IDS: 
+        await callback.message.edit_text("🛠 <b>Административная Панель</b>:", reply_markup=admin_menu())
+
+@router.callback_query(F.data == "admin_manage_users")
+async def admin_manage_users(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in ADMIN_IDS: return
+    await callback.message.edit_text("👤 <b>Улучшенная панель пользователей</b>\n\nВведите Telegram ID пользователя для управления его балансом и статусом блокировок:")
+    await state.set_state(AdminStates.user_manage_id)
+
+@router.message(AdminStates.user_manage_id)
+async def process_user_search(message: Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS: return
+    text = message.text.strip()
+    if not text.isdigit(): return await message.answer("❌ ID должен состоять только из цифр:")
+        
+    uid = int(text)
+    async with db.execute("SELECT first_name, diamonds, is_banned, banned_until FROM users WHERE user_id = ?", (uid,)) as cur:
+        row = await cur.fetchone()
+    
+    if not row: return await message.answer("❌ Юзер не найден в БД бота.")
+    await state.update_data(target_id=uid)
+    
+    ban_status = "❌ Нет"
+    if row[2] == 1: ban_status = "⛔ Перманентно"
+    elif row[3] > int(time.time()): ban_status = f"⏳ До {datetime.fromtimestamp(row[3]).strftime('%d.%m %H:%M')}"
+        
+    kb = InlineKeyboardBuilder()
+    kb.button(text="💎 Изменить баланс алмазов", callback_data="adm_change_diamonds")
+    kb.button(text="🚫 Заблокировать (Временный бан)", callback_data="adm_ban_time")
+    kb.button(text="🔒 Забанить НАВСЕГДА", callback_data="adm_ban_forever")
+    kb.button(text="🔓 Разблокировать", callback_data="adm_unban")
+    kb.button(text="◀️ В админку", callback_data="admin_enter")
+    kb.adjust(1)
+    
+    await message.answer(
+        f"👤 <b>Пользователь:</b> {row[0]}\n"
+        f"ID: <code>{uid}</code>\n"
+        f"Баланс: <b>{row[1]}</b> 💎\n"
+        f"Блокировка: <b>{ban_status}</b>",
+        reply_markup=kb.as_markup()
+    )
+
+@router.callback_query(F.data == "adm_change_diamonds")
+async def adm_change_diamonds_handler(callback: CallbackQuery, state: FSMContext):
+    await callback.message.answer("✍️ Введите число алмазов (например, 50 или -30 для списания):")
+    await state.set_state(AdminStates.user_change_diamonds)
+    await callback.answer()
+
+@router.message(AdminStates.user_change_diamonds)
+async def process_user_change_diamonds(message: Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS: return
+    try: amount = float(message.text.strip())
+    except ValueError: return await message.answer("❌ Введите число:")
+    
+    data = await state.get_data()
+    uid = data.get("target_id")
+    await state.clear()
+    
+    await add_diamonds(uid, amount)
+    await message.answer(f"✅ Баланс успешно изменен на {amount} 💎.", reply_markup=admin_menu())
+
+@router.callback_query(F.data == "adm_ban_time")
+async def adm_ban_time_handler(callback: CallbackQuery, state: FSMContext):
+    await callback.message.answer("⏱ Введите время блокировки в <b>МИНУТАХ</b> (например, 60 для 1 часа или 1440 для суток):")
+    await state.set_state(AdminStates.user_ban_time)
+    await callback.answer()
+
+@router.message(AdminStates.user_ban_time)
+async def process_user_ban_time(message: Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS: return
+    if not message.text.strip().isdigit(): return await message.answer("❌ Введите целое число минут:")
+    
+    minutes = int(message.text.strip())
+    until_ts = int(time.time()) + (minutes * 60)
+    
+    data = await state.get_data()
+    uid = data.get("target_id")
+    await state.clear()
+    
+    await db.execute("UPDATE users SET is_banned = 0, banned_until = ? WHERE user_id = ?", (until_ts, uid))
+    await db.commit()
+    await message.answer(f"✅ Пользователь <code>{uid}</code> временно заблокирован на {minutes} мин.", reply_markup=admin_menu())
+
+@router.callback_query(F.data == "adm_ban_forever")
+async def adm_ban_forever(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    uid = data.get("target_id")
+    await state.clear()
+    await db.execute("UPDATE users SET is_banned = 1, banned_until = 0 WHERE user_id = ?", (uid,))
+    await db.commit()
+    await callback.answer("⛔ Заблокирован навсегда!", show_alert=True)
+    await callback.message.answer("Выполнено.", reply_markup=admin_menu())
+
+@router.callback_query(F.data == "adm_unban")
+async def adm_unban(callback: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    uid = data.get("target_id")
+    await state.clear()
+    await db.execute("UPDATE users SET is_banned = 0, banned_until = 0 WHERE user_id = ?", (uid,))
+    await db.commit()
+    await callback.answer("🔓 Полностью разблокирован!", show_alert=True)
+    await callback.message.answer("Выполнено.", reply_markup=admin_menu())
+
+# ========================= ПРОСМОТР И ОЧИСТКА ПРОМОКОДОВ (АДМИН) =========================
+
+@router.callback_query(F.data == "admin_active_promos")
+async def admin_active_promos(callback: CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS: 
+        return await callback.answer("❌ У вас нет прав администратора!", show_alert=True)
+    
+    await callback.answer()
+    
+    try:
+        async with db.execute("SELECT code, reward, uses_left, creator_id FROM promo_codes") as cur:
+            promos = await cur.fetchall()
+            
+        if not promos:
+            kb = InlineKeyboardBuilder()
+            kb.button(text="◀️ Назад в Админку", callback_data="admin_enter")
+            return await callback.message.edit_text(
+                "🎫 <b>Активных промокодов нет.</b>\n\nБаза данных чиста от кодов.", 
+                reply_markup=kb.as_markup(),
+                parse_mode=ParseMode.HTML
+            )
+            
+        text = "🎫 <b>Список активных промокодов:</b>\n\nНажмите на кнопку под сообщением, чтобы удалить промокод.\n\n"
+        kb = InlineKeyboardBuilder()
+        
+        for code, reward, uses_left, creator in promos:
+            text += f"▪️ Код: <code>{code}</code> | Награда: <b>{reward} 💎</b> | Осталось: <b>{uses_left} шт.</b> (ID: <code>{creator}</code>)\n"
+            kb.button(text=f"❌ Удалить {code}", callback_data=f"adm_del_promo_{code}")
+            
+        kb.button(text="◀️ Назад в Админку", callback_data="admin_enter")
+        kb.adjust(1)
+        
+        await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup())
+        
+    except Exception as e:
+        logging.error(f"Ошибка вывода промокодов: {e}")
+        await callback.message.answer("⚠️ Ошибка при чтении списка промокодов из базы данных.")
+
+@router.callback_query(F.data.startswith("adm_del_promo_"))
+async def admin_delete_promo_callback(callback: CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS: 
+        return await callback.answer("❌ У вас нет прав!", show_alert=True)
+        
+    promo_code = callback.data.replace("adm_del_promo_", "")
+    
+    try:
+        await db.execute("DELETE FROM promo_codes WHERE code = ?", (promo_code,))
+        await db.commit()
+        
+        await callback.answer(f"✅ Промокод {promo_code} успешно удален!", show_alert=True)
+        
+        async with db.execute("SELECT code, reward, uses_left, creator_id FROM promo_codes") as cur:
+            promos = await cur.fetchall()
+            
+        if not promos:
+            kb = InlineKeyboardBuilder()
+            kb.button(text="◀️ Назад в Админку", callback_data="admin_enter")
+            return await callback.message.edit_text(
+                "🎫 <b>Активных промокодов нет.</b>\n\nБаза данных чиста от кодов.", 
+                reply_markup=kb.as_markup(),
+                parse_mode=ParseMode.HTML
+            )
+            
+        text = "🎫 <b>Список активных промокодов:</b>\n\nНажмите на кнопку под сообщением, чтобы удалить промокод.\n\n"
+        kb = InlineKeyboardBuilder()
+        
+        for code, reward, uses_left, creator in promos:
+            text += f"▪️ Код: <code>{code}</code> | Награда: <b>{reward} 💎</b> | Осталось: <b>{uses_left} шт.</b> (ID: <code>{creator}</code>)\n"
+            kb.button(text=f"❌ Удалить {code}", callback_data=f"adm_del_promo_{code}")
+            
+        kb.button(text="◀️ Назад в Админку", callback_data="admin_enter")
+        kb.adjust(1)
+        
+        await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup())
+        
+    except Exception as e:
+        logging.error(f"Ошибка при удалении промокода: {e}")
+        await callback.answer("⚠️ Не удалось удалить промокод.", show_alert=True)
+
+# ========================= ИНСТРУМЕНТ СОЗДАНИЯ ЗАДАНИЙ (АДМИН) =========================
+
+@router.callback_query(F.data == "admin_add_task")
+async def admin_add_task_start(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in ADMIN_IDS: return
+    await callback.message.edit_text(
+        "➕ <b>Инструмент создания рекламных заданий</b>\n\n"
+        "Отправьте параметры строго через разделитель <code>|</code> в одну строчку:\n"
+        "<code>ID_Канала|Ссылка_На_Канал|Награда_В_Алмазах|Описание_Задания</code>\n\n"
+        "Пример формата:\n"
+        "<code>-10022334455|https://t.me/pavel_blog|4.5|Подпишись на личный блог Павла</code>"
+    )
+    await state.set_state(AdminStates.create_task_data)
+
+@router.message(AdminStates.create_task_data)
+async def process_admin_create_task(message: Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS: return
+    text = message.text.strip()
+    try:
+        parts = text.split("|")
+        ch_id = parts[0].strip()
+        ch_url = parts[1].strip()
+        reward = float(parts[2].strip())
+        description = parts[3].strip()
+        
+        await db.execute("INSERT INTO tasks (channel_id, channel_url, reward, description) VALUES (?, ?, ?, ?)", (ch_id, ch_url, reward, description))
+        await db.commit()
+        await state.clear()
+        await message.answer("✅ <b>Задание создано!</b> Оно автоматически появилось в меню 'Задания от спонсоров'.", reply_markup=admin_menu())
+    except Exception as e:
+        await message.answer(f"❌ Ошибка парсинга строки. Проверьте разделители и формат! Лог: {e}")
+
+# ========================= МАГАЗИН И ПЛАТЕЖИ СТАРС =========================
+
+@router.callback_query(F.data == "shop_main")
+async def shop_main(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    udata = await get_user_data(user_id, callback.from_user.first_name)
+    prem_status = "❌ Нет" if udata["premium"] == 0 else ("🌟 Premium" if udata["premium"] == 1 else "🔥 Premium+")
+    keep_status = "✅ Да" if udata["keep_videos"] == 1 or udata["premium"] == 2 else "❌ Нет"
+    
+    boost_status = "❌ Нет"
+    if udata["x2_until"] and datetime.fromisoformat(udata["x2_until"]) > datetime.now():
+        boost_status = f"✅ Активен до {datetime.fromisoformat(udata['x2_until']).strftime('%H:%M %d.%m')}"
+        
+    is_disc = await is_event_active("global_discount_until")
+    timer = await get_event_remaining_time("global_discount_until")
+    disc_text = ""
+    if is_disc:
+        pct = await get_setting("global_discount_percent")
+        disc_text = f"\n⚠️ <b>🔥 ДЕЙСТВУЕТ СКИДКА -{pct}% (Осталось: {timer})</b>"
+
+    if await is_event_active("global_x3_stars_until"):
+        t_x3 = await get_event_remaining_time("global_x3_stars_until")
+        disc_text += f"\n⚠️ <b>⚡️ ИВЕНТ: Х3 АЛМАЗЫ ПРИ ПОКУПКЕ! ({t_x3})</b>"
+
+    text = f"🛒 <b>Магазин категорий</b>{disc_text}\n\n💰 Баланс: <b>{udata['diamonds']}</b> 💎\n👑 Премиум: <b>{prem_status}</b>\n🚀 Буст х2: <b>{boost_status}</b>\n♾ Навсегда: <b>{keep_status}</b>"
+    try: await callback.message.edit_text(text, reply_markup=shop_categories_kb())
+    except TelegramBadRequest: pass
+
+@router.callback_query(F.data == "cat_diamonds")
+async def cat_diamonds(callback: CallbackQuery):
+    is_disc = await is_event_active("global_discount_until")
+    pct = int(await get_setting("global_discount_percent")) if is_disc else 0
+    timer = await get_event_remaining_time("global_discount_until")
+    try: await callback.message.edit_text("💎 <b>Пополнение алмазов (Telegram Stars)</b>\n\n<i>Курс: 1 алмаз = 0.5 звезд</i>", reply_markup=shop_diamonds_kb(discount_pct=pct, timer=timer))
+    except TelegramBadRequest: pass
+
+@router.callback_query(F.data == "stars_custom")
+async def stars_custom(callback: CallbackQuery, state: FSMContext):
+    await callback.message.edit_text("✍️ Введите желаемое количество алмазов для покупки (минимум 10):")
+    await state.set_state(ShopStates.custom_diamonds)
+
+@router.message(ShopStates.custom_diamonds)
+async def process_custom_diamonds(message: Message, state: FSMContext):
+    text = message.text.strip()
+    if not text.isdigit() or int(text) < 10:
+        return await message.answer("❌ Введите корректное число алмазов (от 10 и выше):")
+    
+    diamonds = int(text)
+    await state.clear()
+    raw_stars = diamonds * 0.5
+    stars_price = max(1, int(raw_stars + 0.999))
+    
+    if await is_event_active("global_discount_until"):
+        pct = int(await get_setting("global_discount_percent"))
+        stars_price = max(1, int(stars_price * (1 - pct / 100)))
+
+    try:
+        await message.answer_invoice(
+            title=f"Покупка {diamonds} алмазов",
+            description=f"Кастомное начисление {diamonds} алмазов на игровой баланс.",
+            payload=f"buy_diamonds:{diamonds}",
+            currency="XTR",
+            prices=[LabeledPrice(label="Telegram Stars", amount=stars_price)]
+        )
+    except Exception:
+        await message.answer("❌ Ошибка генерации счета Telegram Stars.")
+
+@router.callback_query(F.data.startswith("stars_"))
+async def buy_diamonds_stars(callback: CallbackQuery):
+    rates = {"stars_100": (100, 50), "stars_250": (250, 120), "stars_500": (500, 200)}
+    if callback.data in rates:
+        diamonds, stars_price = rates[callback.data]
+        if await is_event_active("global_discount_until"):
+            pct = int(await get_setting("global_discount_percent"))
+            stars_price = max(1, int(stars_price * (1 - pct / 100)))
+        try:
+            await callback.message.answer_invoice(
+                title=f"Покупка {diamonds} алмазов",
+                description=f"Начисление {diamonds} алмазов на баланс.",
+                payload=f"buy_diamonds:{diamonds}",
+                currency="XTR",
+                prices=[LabeledPrice(label="Telegram Stars", amount=stars_price)]
+            )
+            await callback.answer()
+        except Exception:
+            await callback.answer("❌ Ошибка создания инвойса Stars.", show_alert=True)
+
+# ========================= ОБРАБОТЧИК ПЛАТЕЖЕЙ =========================
+
+@router.pre_checkout_query()
+async def pre_checkout_query(query: PreCheckoutQuery):
+    await query.answer(ok=True)
+
+@router.message(F.successful_payment)
+async def global_successful_payment(message: Message):
+    payload = message.successful_payment.invoice_payload
+    if payload.startswith("buy_diamonds:"):
+        diamonds = int(payload.split(":")[1])
+        if await is_event_active("global_x3_stars_until"): 
+            diamonds *= 3
+        await add_diamonds(message.from_user.id, float(diamonds))
+        x3_msg = " [⚡️ Сработал Ивент Х3!]" if await is_event_active("global_x3_stars_until") else ""
+        await message.answer(f"🎉 <b>Оплата зачислена!</b> +<b>{diamonds}</b> 💎.{x3_msg}")
+
+# ========================= КАТЕГОРИИ МАГАЗИНА =========================
+
+@router.callback_query(F.data == "cat_abilities")
+async def cat_abilities(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    async with db.execute("SELECT diamonds FROM users WHERE user_id = ?", (user_id,)) as cur:
+        row = await cur.fetchone()
+    if row and row[0] < 0: return await callback.answer("❌ У вас отрицательный баланс!", show_alert=True)
+
+    is_disc = await is_event_active("global_discount_until")
+    pct = int(await get_setting("global_discount_percent")) if is_disc else 0
+    timer = await get_event_remaining_time("global_discount_until")
+    try: await callback.message.edit_text("⚡ <b>Магазин способностей</b>", reply_markup=shop_abilities_kb(discount_pct=pct, timer=timer))
+    except TelegramBadRequest: pass
+
+@router.callback_query(F.data == "buy_boost_x2")
+async def buy_boost_x2(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    udata = await get_user_data(user_id, callback.from_user.first_name)
+    if udata["diamonds"] < 0: return await callback.answer("❌ Баланс в минусе!", show_alert=True)
+    is_disc = await is_event_active("global_discount_until")
+    pct = int(await get_setting("global_discount_percent")) if is_disc else 0
+    price = int(50 * (1 - pct / 100))
+    if udata["diamonds"] < price: return await callback.answer(f"❌ Нужно {price} 💎", show_alert=True)
+    await db.execute("UPDATE users SET diamonds = diamonds - ?, x2_until = ? WHERE user_id = ? AND diamonds >= ?", (price, (datetime.now() + timedelta(hours=24)).isoformat(), user_id, price))
+    await db.commit()
+    await callback.answer("🚀 Буст х2 активирован на 24 часа!", show_alert=True)
+    await shop_main(callback)
+
+@router.callback_query(F.data == "buy_keep_videos")
+async def buy_keep_videos(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    udata = await get_user_data(user_id, callback.from_user.first_name)
+    if udata["diamonds"] < 0: return await callback.answer("❌ Баланс в минусе!", show_alert=True)
+    if udata["keep_videos"] == 1 or udata["premium"] == 2: return await callback.answer("Уже активно!", show_alert=True)
+    is_disc = await is_event_active("global_discount_until")
+    pct = int(await get_setting("global_discount_percent")) if is_disc else 0
+    price = int(500 * (1 - pct / 100))
+    if udata["diamonds"] < price: return await callback.answer(f"❌ Нужно {price} 💎", show_alert=True)
+    await db.execute("UPDATE users SET diamonds = diamonds - ?, keep_videos = 1 WHERE user_id = ? AND diamonds >= ?", (price, user_id, price))
+    await db.commit()
+    await callback.answer("♾ Видео теперь сохраняются навсегда!", show_alert=True)
+    await shop_main(callback)
+
+@router.callback_query(F.data == "cat_premium")
+async def cat_premium(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    async with db.execute("SELECT diamonds FROM users WHERE user_id = ?", (user_id,)) as cur:
+        row = await cur.fetchone()
+    if row and row[0] < 0: return await callback.answer("❌ У вас отрицательный баланс!", show_alert=True)
+
+    is_disc = await is_event_active("global_discount_until")
+    pct = int(await get_setting("global_discount_percent")) if is_disc else 0
+    timer = await get_event_remaining_time("global_discount_until")
+    try: await callback.message.edit_text("👑 <b>Премиум подписки</b>", reply_markup=shop_premium_kb(discount_pct=pct, timer=timer))
+    except TelegramBadRequest: pass
+
+@router.callback_query(F.data == "buy_prem_normal")
+async def buy_prem_normal(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    udata = await get_user_data(user_id, callback.from_user.first_name)
+    if udata["diamonds"] < 0: return await callback.answer("❌ Баланс в минусе!", show_alert=True)
+    if udata["premium"] >= 1: return await callback.answer("Уже активно!", show_alert=True)
+    is_disc = await is_event_active("global_discount_until")
+    pct = int(await get_setting("global_discount_percent")) if is_disc else 0
+    price = int(1500 * (1 - pct / 100))
+    if udata["diamonds"] < price: return await callback.answer(f"❌ Нужно {price} 💎", show_alert=True)
+    await db.execute("UPDATE users SET diamonds = diamonds - ?, premium = 1 WHERE user_id = ? AND diamonds >= ?", (price, user_id, price))
+    await db.commit()
+    await callback.answer("👑 PREMIUM статус активирован!", show_alert=True)
+    await shop_main(callback)
+
+@router.callback_query(F.data == "buy_prem_plus")
+async def buy_prem_plus(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    udata = await get_user_data(user_id, callback.from_user.first_name)
+    if udata["diamonds"] < 0: return await callback.answer("❌ Баланс в минусе!", show_alert=True)
+    if udata["premium"] == 2: return await callback.answer("Уже активно!", show_alert=True)
+    is_disc = await is_event_active("global_discount_until")
+    pct = int(await get_setting("global_discount_percent")) if is_disc else 0
+    price = int(2000 * (1 - pct / 100))
+    if udata["diamonds"] < price: return await callback.answer(f"❌ Нужно {price} 💎", show_alert=True)
+    await db.execute("UPDATE users SET diamonds = diamonds - ?, premium = 2 WHERE user_id = ? AND diamonds >= ?", (price, user_id, price))
+    await db.commit()
+    await callback.answer("🔥 PREMIUM+ статус активирован!", show_alert=True)
+    await shop_main(callback)
+
+# ========================= СТАНДАРТНЫЕ МЕНЮ =========================
+
+@router.callback_query(F.data == "back_main")
+async def back_main(callback: CallbackQuery):
+    udata = await get_user_data(callback.from_user.id)
+    await callback.message.edit_text(f"💎 Баланс: <b>{udata['diamonds']}</b> алмазов", reply_markup=main_menu(callback.from_user.id))
+
+@router.callback_query(F.data.in_({"referral", "support"}))
+async def static_callbacks(callback: CallbackQuery, bot: Bot):
+    if callback.data == "referral":
+        me = await bot.get_me()
+        await callback.message.edit_text(f"👥 Реф. ссылка:\n<code>https://t.me/{me.username}?start={callback.from_user.id}</code>\n\nПриглашение: +4 💎\n\n<i>Важно: Алмазы поступят на твой аккаунт только после подписки приглашенного на каналы спонсоров!</i>", reply_markup=InlineKeyboardBuilder().button(text="◀️ Назад", callback_data="back_main").as_markup())
+    elif callback.data == "support":
+        await callback.message.edit_text("🛠 ТП: @твой_юзернейм", reply_markup=InlineKeyboardBuilder().button(text="◀️ Назад", callback_data="back_main").as_markup())
+
+# ========================= УПРАВЛЕНИЕ ИВЕНТАМИ И СТАТИСТИКА (АДМИН) =========================
+
+@router.callback_query(F.data == "admin_stats")
+async def admin_stats(callback: CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS: return
+    async with db.execute("SELECT COUNT(*) FROM users") as cur: total_users = (await cur.fetchone())[0]
+    
+    x2_active = "✅ Активен" if await is_event_active("global_x2_until") else "❌ Выключен"
+    is_disc = await is_event_active("global_discount_until")
+    pct = await get_setting("global_discount_percent")
+    disc_active = f"✅ Активен (-{pct}%)" if is_disc else "❌ Выключен"
+    x3_stars = "✅ Активен" if await is_event_active("global_x3_stars_until") else "❌ Выключен"
+    free_view = "✅ Активен" if await is_event_active("global_free_view_until") else "❌ Выключен"
+    lucky_hour = "✅ Активен" if await is_event_active("global_lucky_hour_until") else "❌ Выключен"
+    
+    text = (
+        f"📊 <b>Статистика Системы:</b>\n\n"
+        f"👥 Пользователей в БД: <b>{total_users}</b>\n"
+        f"🪞 Активных ботов в пуле: <b>{len(GLOBAL_BOTS_POOL)}</b>\n\n"
+        f"🔥 <b>Текущие Ивенты:</b>\n"
+        f"🚀 Глобальный х2 реф: {x2_active}\n"
+        f"📉 Скидки в шопе: {disc_active}\n"
+        f"⚡️ Х3 Пополнение (Stars): {x3_stars}\n"
+        f"🆓 Бесплатные просмотры: {free_view}\n"
+        f"🍀 Счастливый час (+2 💎): {lucky_hour}"
+    )
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardBuilder().button(text="◀️ Назад", callback_data="admin_enter").as_markup())
 
 @router.callback_query(F.data == "admin_events_panel")
 async def admin_events_panel(callback: CallbackQuery):
     if callback.from_user.id not in ADMIN_IDS: return
-    await callback.message.edit_text("🔥 <b>Управление глобальными событиями во всех ботах пула:</b>", reply_markup=admin_events_kb())
+    await callback.message.edit_text("🔥 <b>Управление Ивентами</b>\n\nВыберите тип ивента для настройки и запуска:", reply_markup=admin_events_kb())
 
-@router.callback_query(F.data.startswith("ev_setup_"))
-async def setup_event_trigger(callback: CallbackQuery, state: FSMContext):
+@router.callback_query(F.data == "ev_setup_x2")
+async def ev_setup_x2(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id not in ADMIN_IDS: return
-    ev_type = callback.data.replace("ev_setup_", "")
-    await state.update_data(ev_type=ev_type)
-    
-    if ev_type == "setup_discount":
-        await callback.message.edit_text("📉 Введите процент скидки в магазине (целое число от 1 до 90):")
-        await state.set_state(AdminStates.event_percent)
-    elif ev_type == "setup_giveaway":
-        await callback.message.edit_text("🎁 Введите сумму раздачи алмазов для КАЖДОГО пользователя:")
-        await state.set_state(AdminStates.event_giveaway)
-    else:
-        await callback.message.edit_text("⏳ Введите длительность события в часах (целое число):")
-        await state.set_state(AdminStates.event_hours)
+    await callback.message.edit_text("⏳ <b>Ивент: х2 Рефералы</b>\n\nВведите время действия ивента в <b>ЧАСАХ</b>:")
+    await state.set_state(AdminStates.event_hours)
+    await state.update_data(event_type="x2")
+
+@router.callback_query(F.data == "ev_setup_x3_stars")
+async def ev_setup_x3_stars(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in ADMIN_IDS: return
+    await callback.message.edit_text("⚡️ <b>Ивент: Х3 К покупкам Stars</b>\n\nВведите время действия ивента в <b>ЧАСАХ</b>:")
+    await state.set_state(AdminStates.event_hours)
+    await state.update_data(event_type="x3_stars")
+
+@router.callback_query(F.data == "ev_setup_free_view")
+async def ev_setup_free_view(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in ADMIN_IDS: return
+    await callback.message.edit_text("🆓 <b>Ивент: Бесплатный Просмотр Медиа</b>\n\nВведите время действия ивента в <b>ЧАСАХ</b>:")
+    await state.set_state(AdminStates.event_hours)
+    await state.update_data(event_type="free_view")
+
+@router.callback_query(F.data == "ev_setup_lucky_hour")
+async def ev_setup_lucky_hour(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in ADMIN_IDS: return
+    await callback.message.edit_text("🍀 <b>Ивент: Счастливый Час</b>\n\nВведите время действия ивента в <b>ЧАСАХ</b>:")
+    await state.set_state(AdminStates.event_hours)
+    await state.update_data(event_type="lucky_hour")
+
+@router.callback_query(F.data == "ev_setup_discount")
+async def ev_setup_discount(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in ADMIN_IDS: return
+    await callback.message.edit_text("📉 <b>Ивент: Кастомные Скидки</b>\n\nШаг 1: Введите процент скидки (число от 1 до 99):")
+    await state.set_state(AdminStates.event_percent)
+
+@router.message(AdminStates.event_percent)
+async def process_event_percent(message: Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS: return
+    text = message.text.strip()
+    if not text.isdigit() or not (1 <= int(text) <= 99): return await message.answer("❌ Введите корректный процент (от 1 до 99):")
+    await state.update_data(discount_pct=int(text))
+    await message.answer("⏳ Шаг 2: Введите время действия скидок в <b>ЧАСАХ</b>:")
+    await state.set_state(AdminStates.event_hours)
+    await state.update_data(event_type="discount")
 
 @router.message(AdminStates.event_hours)
 async def process_event_hours(message: Message, state: FSMContext):
     if message.from_user.id not in ADMIN_IDS: return
     text = message.text.strip()
-    if not text.isdigit(): return await message.answer("Ошибка: введите целое число.")
+    if not text.isdigit(): return await message.answer("❌ Пожалуйста, введите целое число часов:")
+        
     hours = int(text)
     data = await state.get_data()
-    ev = data['ev_type']
+    etype = data.get("event_type")
     await state.clear()
-    
     until_time = (datetime.now() + timedelta(hours=hours)).isoformat()
     
-    if ev == "setup_x2":
+    if etype == "x2":
         await set_setting("global_x2_until", until_time)
-        await broadcast_event_start("х2 Награда за рефералов!", "Реферальный бонус временно увеличен до 8 💎 за каждого приглашенного пользователя!", hours)
-    elif ev == "setup_x3_stars":
+        await message.answer(f"✅ Глобальный ивент запущен!")
+        asyncio.create_task(broadcast_event_start("🚀 ДВОЙНЫЕ НАГРАДЫ ЗА ДРУЗЕЙ (х2)", "С этого момента за каждого приглашенного реферала абсолютно все пользователи получают двойную выплату алмазов!", hours))
+    elif etype == "discount":
+        pct = data.get("discount_pct", 30)
+        await set_setting("global_discount_percent", str(pct))
+        await set_setting("global_discount_until", until_time)
+        await message.answer(f"✅ Ивент Скидки -{pct}% успешно запущен!")
+        asyncio.create_task(broadcast_event_start(f"📉 ШОК-СКИДКИ В МАГАЗИНЕ (-{pct}%)", f"Цены на способности, улучшения и покупку алмазов за Звезды снижены на {pct}%!", hours))
+    elif etype == "x3_stars":
         await set_setting("global_x3_stars_until", until_time)
-        await broadcast_event_start("х3 Пополнение Алмазов!", "При покупке алмазов через Telegram Stars вы будете получать в ТРИ РАЗА БОЛЬШЕ алмазов!", hours)
-    elif ev == "setup_free_view":
+        await message.answer(f"✅ Ивент Х3 запущен!")
+        asyncio.create_task(broadcast_event_start("⚡️ АЛМАЗНЫЙ ЛИВЕНЬ (Х3 К ПОКУПКАМ)", "Внимание! Любая покупка алмазов через Telegram Stars увеличивается в 3 раза!", hours))
+    elif etype == "free_view":
         await set_setting("global_free_view_until", until_time)
-        await broadcast_event_start("Бесплатный просмотр контента!", "Все ограничения сняты! Смотрите видео и фото абсолютно БЕСПЛАТНО, алмазы не списываются!", hours)
-    elif ev == "setup_lucky_hour":
+        await message.answer(f"✅ Ивент Бесплатный Просмотр запущен!")
+        asyncio.create_task(broadcast_event_start("🆓 АТТРАКЦИОН НЕВИДАННОЙ ЩЕДРОСТИ (0 💎)", "Администрация открыла бесплатный просмотр всех видео и фото для всех пользователей!", hours))
+    elif etype == "lucky_hour":
         await set_setting("global_lucky_hour_until", until_time)
-        await broadcast_event_start("Счастливый час!", "За просмотр медиафайлов вы больше не тратите алмазы, а наоборот — ПОЛУЧАЕТЕ +2 💎 за каждый просмотр!", hours)
-        
-    await message.answer("🚀 Событие успешно запущено на уровне всей сети ботов!", reply_markup=admin_menu())
+        await message.answer(f"✅ Ивент Счастливый Час запущен!")
+        asyncio.create_task(broadcast_event_start("🍀 СЧАСТЛИВЫЙ ЧАС (+2 💎 ЗА АКТИВНОСТЬ)", "Невероятный бонус! Просматривайте медиа прямо сейчас и вместо списания алмазов получайте +2 💎 прямо на баланс!", hours))
 
-# ОСТАЛЬНЫЕ БАЗОВЫЕ ХЕНДЛЕРЫ
-@router.callback_query(F.data == "support")
-async def support_handler(callback: CallbackQuery):
-    await callback.message.answer("🛠 <b>Служба поддержки проекта</b>\n\nЕсли у вас возникли вопросы по оплате, багам или сотрудничеству, пишите главным администраторам проекта:\n👉 @PavelGiftsPG")
-    await callback.answer()
+@router.callback_query(F.data == "ev_setup_giveaway")
+async def ev_setup_giveaway(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in ADMIN_IDS: return
+    await callback.message.edit_text("🎁 <b>Ивент: Раздача Алмазов</b>\n\nВведите количество алмазов для <b>КАЖДОГО</b> пользователя:")
+    await state.set_state(AdminStates.event_giveaway)
 
-@router.callback_query(F.data == "leaderboard")
-async def leaderboard_handler(callback: CallbackQuery):
-    async with db.execute("SELECT first_name, diamonds FROM users ORDER BY diamonds DESC LIMIT 10") as cur:
-        rows = await cur.fetchall()
-    text = "🏆 <b>ТОП-10 Богатейших пользователей бота:</b>\n\n"
-    for i, row in enumerate(rows, 1):
-        text += f"{i}. 👤 {row[0]} — <b>{row[1]} 💎</b>\n"
-    await callback.message.edit_text(text, reply_markup=InlineKeyboardBuilder().button(text="◀️ Меню", callback_data="back_main").as_markup())
-
-@router.callback_query(F.data == "referral")
-async def referral_handler(callback: CallbackQuery):
-    user_id = callback.from_user.id
-    me = await callback.message.bot.get_me()
-    ref_link = f"https://t.me/{me.username}?start={user_id}"
+@router.message(AdminStates.event_giveaway)
+async def process_event_giveaway(message: Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS: return
+    if not message.text.strip().isdigit(): return await message.answer("❌ Введите целое число:")
+    amount = int(message.text.strip())
+    await state.clear()
     
-    async with db.execute("SELECT COUNT(*) FROM users WHERE referred_by = ?", (user_id,)) as cur:
-        cnt = (await cur.fetchone())[0]
-        
-    text = (
-        f"👥 <b>Реферальная система</b>\n\n"
-        f"Приглашайте друзей и зарабатывайте алмазы!\n"
-        f"💰 Награда за друга: <b>4.0 💎</b> (или 8.0 💎 во время ивентов!)\n\n"
-        f"📈 Вы пригласили: <b>{cnt}</b> человек\n\n"
-        f"🔗 <b>Ваша реферальная ссылка:</b>\n<code>{ref_link}</code>"
-    )
-    await callback.message.edit_text(text, reply_markup=InlineKeyboardBuilder().button(text="◀️ Меню", callback_data="back_main").as_markup())
+    msg = await message.answer("⏳ Начисляю алмазы всей базе данных...")
+    await db.execute("UPDATE users SET diamonds = diamonds + ?", (amount,))
+    await db.commit()
+    await msg.edit_text(f"✅ Раздача завершена! Всем добавлено по +{amount} 💎.")
+    asyncio.create_task(broadcast_event_start("🎁 МГНОВЕННАЯ СУПЕР-РАЗДАЧА", f"Администрация зачислила на баланс каждому пользователю бота по <b>+{amount} алмазов</b>!", None))
 
-# ========================= КОРНЕВОЙ ЗАПУСК МУЛЬТИБОТОВ =========================
+@router.callback_query(F.data == "admin_mail")
+async def admin_mail(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in ADMIN_IDS: return
+    await callback.message.edit_text("📢 Введите текст рекламной рассылки:")
+    await state.set_state(AdminStates.mailing_text)
+
+@router.message(AdminStates.mailing_text)
+async def process_admin_mailing(message: Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS: return
+    text = message.text
+    await state.clear()
+    await message.answer("⏳ Запущена массовая рассылка по всем ботам пула...")
+    await send_to_all_bots(text)
+    await message.answer("✅ Рассылка завершена.")
+
+# ========================= СИСТЕМНЫЕ ФУНКЦИИ И ОЧИСТКА =========================
+
+async def delete_old_videos():
+    while True:
+        await asyncio.sleep(30)
+        try:
+            async with db.execute("SELECT message_id, chat_id FROM videos WHERE delete_at <= ?", (datetime.now().isoformat(),)) as cur: rows = await cur.fetchall()
+            if rows and GLOBAL_BOTS_POOL:
+                main_bot = GLOBAL_BOTS_POOL[0]
+                for mid, cid in rows:
+                    try: await main_bot.delete_message(cid, mid)
+                    except Exception: pass
+                    await db.execute("DELETE FROM videos WHERE message_id = ? AND chat_id = ?", (mid, cid))
+                await db.commit()
+        except Exception: pass
+
+# ========================= ГЛАВНЫЙ ЗАПУСК СИСТЕМЫ =========================
 
 async def main():
     await init_db()
-    
     dp = Dispatcher()
-    dp.include_router(router)
-    # Регистрируем исправленную мидлварь глобально на все события
-    dp.message.middleware(BanMiddleware())
-    dp.callback_query.middleware(BanMiddleware())
     
+    # Подключение мидлвари
+    dp.update.outer_middleware(BanMiddleware())
+    dp.include_router(router)
+
+    # Обработчик платежей
     @dp.pre_checkout_query()
-    async def process_pre_checkout(pre_checkout_query: PreCheckoutQuery):
-        await pre_checkout_query.answer(ok=True)
-        
+    async def pre_checkout_query_handler(query: PreCheckoutQuery):
+        await query.answer(ok=True)
+
     @dp.message(F.successful_payment)
-    async def global_successful_payment(message: Message):
+    async def payment_success_handler(message: Message):
         payload = message.successful_payment.invoice_payload
         if payload.startswith("buy_diamonds:"):
             diamonds = int(payload.split(":")[1])
-            if await is_event_active("global_x3_stars_until"): diamonds *= 3
+            if await is_event_active("global_x3_stars_until"): 
+                diamonds *= 3
             await add_diamonds(message.from_user.id, float(diamonds))
             x3_msg = " [⚡️ Сработал Ивент Х3!]" if await is_event_active("global_x3_stars_until") else ""
             await message.answer(f"🎉 <b>Оплата зачислена!</b> +<b>{diamonds}</b> 💎.{x3_msg}")
@@ -1085,7 +1474,7 @@ async def main():
     print("🚀 Запуск пула мультиботов...")
     for token in MAIN_TOKENS:
         try:
-            bot_instance = Bot(token=token, properties=DefaultBotProperties(parse_mode=ParseMode.HTML))
+            bot_instance = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
             GLOBAL_BOTS_POOL.append(bot_instance)
             await bot_instance.delete_webhook(drop_pending_updates=True)
             asyncio.create_task(dp.start_polling(bot_instance, allowed_updates=dp.resolve_used_update_types()))
@@ -1093,7 +1482,7 @@ async def main():
         except Exception as e:
             print(f"❌ Ошибка запуска бота с токеном {token.split(':')[0]}: {e}")
             
-    print("🤖 Пул мультиботов активен. Ожидание обновлений...")
+    print("🤖 Все боты активны. Ожидание событий...")
     while True:
         await asyncio.sleep(3600)
 
