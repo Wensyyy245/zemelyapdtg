@@ -20,7 +20,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.exceptions import TelegramBadRequest
 
 logging.basicConfig(level=logging.INFO)
-
+asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
 # ========================= НАСТРОЙКИ =========================
 
 MAIN_TOKENS = [
@@ -127,6 +127,7 @@ async def init_db():
     await db.execute("INSERT OR IGNORE INTO settings VALUES ('global_x3_stars_until', 'NULL')")
     await db.execute("INSERT OR IGNORE INTO settings VALUES ('global_free_view_until', 'NULL')")
     await db.execute("INSERT OR IGNORE INTO settings VALUES ('global_lucky_hour_until', 'NULL')")
+    await db.execute("INSERT OR IGNORE INTO settings VALUES ('maintenance_mode', 'false')")
 
     await db.execute("""
         CREATE TABLE IF NOT EXISTS videos (
@@ -211,6 +212,10 @@ async def get_event_remaining_time(event_key: str) -> str:
         pass
     return ""
 
+async def is_maintenance_mode() -> bool:
+    val = await get_setting('maintenance_mode')
+    return val.lower() == 'true'
+
 async def send_to_all_bots(text: str):
     if not GLOBAL_BOTS_POOL: return
     async with db.execute("SELECT user_id FROM users") as cur: 
@@ -274,6 +279,31 @@ class BanMiddleware(BaseMiddleware):
                         return
         return await handler(event, data)
 
+class MaintenanceMiddleware(BaseMiddleware):
+    async def __call__(self, handler, event, data):
+        if await is_maintenance_mode():
+            user = data.get("event_from_user")
+            if user and user.id not in ADMIN_IDS:
+                maintenance_text = (
+                    "🛠 <b>Технические работы в боте!</b>\n\n"
+                    "Бот временно недоступен.\n"
+                    "Следите за новостями в нашем канале: https://t.me/+ryYTkHSQG6VmNjUy"
+                )
+                if isinstance(event, CallbackQuery):
+                    try:
+                        await event.answer("🛠 Техработы!", show_alert=True)
+                        if event.message:
+                            await event.message.edit_text(maintenance_text)
+                    except Exception:
+                        pass
+                elif isinstance(event, Message):
+                    try:
+                        await event.answer(maintenance_text)
+                    except Exception:
+                        pass
+                return
+        return await handler(event, data)
+    
 async def check_subscription(user_id: int, bot: Bot) -> bool:
     for channel_data in CHANNELS:
         channel = channel_data[0] if isinstance(channel_data, (tuple, list)) else channel_data
@@ -381,9 +411,11 @@ def admin_menu():
     kb.button(text="📊 Статистика", callback_data="admin_stats")
     kb.button(text="👤 Управление юзерами (💎/🚫)", callback_data="admin_manage_users")
     kb.button(text="🎫 Активные промокоды", callback_data="admin_active_promos")
+    kb.button(text="🗑 Удалить ВСЕ промокоды", callback_data="admin_delete_all_promos")
     kb.button(text="➕ Создать Задание (Оффер)", callback_data="admin_add_task")
     kb.button(text="📢 Рассылка текста", callback_data="admin_mail")
     kb.button(text="🔥 Управление ИВЕНТАМИ", callback_data="admin_events_panel")
+    kb.button(text="🛠 Техработы (Вкл/Выкл)", callback_data="admin_toggle_maintenance")
     kb.button(text="◀️ Назад в меню", callback_data="back_main")
     kb.adjust(1)
     return kb.as_markup()
@@ -1409,72 +1441,93 @@ async def delete_old_videos():
         except Exception: 
             pass
 
+@router.callback_query(F.data == "admin_delete_all_promos")
+async def admin_delete_all_promos(callback: CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        return await callback.answer("❌ Нет прав!", show_alert=True)
+    
+    try:
+        async with db.execute("SELECT COUNT(*) FROM promo_codes") as cur:
+            count = (await cur.fetchone())[0]
+        
+        await db.execute("DELETE FROM promo_codes")
+        await db.execute("DELETE FROM promo_activations")
+        await db.commit()
+        
+        await callback.answer(f"✅ Удалено {count} промокодов!", show_alert=True)
+        await callback.message.edit_text("🗑 <b>Все промокоды успешно удалены.</b>", reply_markup=InlineKeyboardBuilder().button(text="◀️ В админку", callback_data="admin_enter").as_markup())
+    except Exception as e:
+        logging.error(f"Ошибка удаления всех промо: {e}")
+        await callback.answer("⚠️ Ошибка при очистке.", show_alert=True)
+
+
+@router.callback_query(F.data == "admin_toggle_maintenance")
+async def admin_toggle_maintenance(callback: CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        return await callback.answer("❌ Нет прав!", show_alert=True)
+    
+    current = await is_maintenance_mode()
+    new_state = "false" if current else "true"
+    await set_setting("maintenance_mode", new_state)
+    
+    status = "✅ ВКЛЮЧЕН" if new_state == "true" else "❌ ВЫКЛЮЧЕН"
+    await callback.answer(f"Техработы: {status}", show_alert=True)
+    
+    # Обновляем текст, чтобы избежать ошибки "message is not modified"
+    await callback.message.edit_text(
+        f"🛠 <b>Административная Панель</b>\n\n"
+        f"Технические работы: <b>{status}</b>",
+        reply_markup=admin_menu()
+    )
+
 # ========================= ГЛАВНЫЙ ЗАПУСК =========================
 
 async def main():
     await init_db()
     
-    # Запускаем фоновую задачу
     asyncio.create_task(delete_old_videos())
     
     print("🚀 Запуск пула мультиботов...")
-    
-    # Для каждого токена создаем отдельный Dispatcher
+
+    # Один Dispatcher на все боты
+    dp = Dispatcher()
+    dp.message.outer_middleware(BanMiddleware())
+    dp.callback_query.outer_middleware(BanMiddleware())
+    dp.message.outer_middleware(MaintenanceMiddleware())
+    dp.callback_query.outer_middleware(MaintenanceMiddleware())
+    dp.include_router(router)
+
+    @dp.pre_checkout_query()
+    async def pre_checkout_query_handler(query: PreCheckoutQuery):
+        await query.answer(ok=True)
+
+    @dp.message(F.successful_payment)
+    async def payment_success_handler(message: Message):
+        payload = message.successful_payment.invoice_payload
+        if payload.startswith("buy_diamonds:"):
+            diamonds = int(payload.split(":")[1])
+            if await is_event_active("global_x3_stars_until"):
+                diamonds *= 3
+            await add_diamonds(message.from_user.id, float(diamonds))
+            x3_msg = " [⚡️ Сработал Ивент Х3!]" if await is_event_active("global_x3_stars_until") else ""
+            await message.answer(f"🎉 <b>Оплата зачислена!</b> +<b>{diamonds}</b> 💎.{x3_msg}")
+
     for token in MAIN_TOKENS:
         try:
             print(f"📱 Запускаю бота с токеном: {token[:10]}...")
-            
             bot_instance = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-            
-            # Создаем отдельный Dispatcher для каждого бота
-            dp = Dispatcher()
-            
-            # Подключаем мидлварь
-            dp.update.outer_middleware(BanMiddleware())
-            
-            # Подключаем роутер с хендлерами
-            dp.include_router(router)
-            
-            # Добавляем обработчики платежей для этого бота
-            @dp.pre_checkout_query()
-            async def pre_checkout_query_handler(query: PreCheckoutQuery):
-                await query.answer(ok=True)
-
-            @dp.message(F.successful_payment)
-            async def payment_success_handler(message: Message):
-                payload = message.successful_payment.invoice_payload
-                if payload.startswith("buy_diamonds:"):
-                    diamonds = int(payload.split(":")[1])
-                    if await is_event_active("global_x3_stars_until"): 
-                        diamonds *= 3
-                    await add_diamonds(message.from_user.id, float(diamonds))
-                    x3_msg = " [⚡️ Сработал Ивент Х3!]" if await is_event_active("global_x3_stars_until") else ""
-                    await message.answer(f"🎉 <b>Оплата зачислена!</b> +<b>{diamonds}</b> 💎.{x3_msg}")
-            
-            # Сохраняем бота в пул
-            GLOBAL_BOTS_POOL.append(bot_instance)
-            
-            # Удаляем вебхук
             await bot_instance.delete_webhook(drop_pending_updates=True)
-            
-            # Запускаем поллинг в отдельной задаче
-            asyncio.create_task(dp.start_polling(
-                bot_instance, 
-                allowed_updates=dp.resolve_used_update_types()
-            ))
-            
-            print(f"✅ Бот [{token.split(':')[0]}] успешно запущен.")
-            
+            GLOBAL_BOTS_POOL.append(bot_instance)
+            print(f"✅ Бот [{token.split(':')[0]}] добавлен в пул.")
         except Exception as e:
             print(f"❌ Ошибка запуска бота с токеном {token.split(':')[0]}: {e}")
             import traceback
             traceback.print_exc()
-            
+
     print(f"🤖 Все боты активны. Всего ботов: {len(GLOBAL_BOTS_POOL)}")
-    
-    # Держим бота активным
-    while True:
-        await asyncio.sleep(3600)
+
+    # Один поллинг сразу для всех ботов пула
+    await dp.start_polling(*GLOBAL_BOTS_POOL, allowed_updates=dp.resolve_used_update_types())
 
 if __name__ == "__main__":
     try:
