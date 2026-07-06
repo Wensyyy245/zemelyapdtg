@@ -15,13 +15,13 @@ from aiogram.enums import ParseMode
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import Message, CallbackQuery, LabeledPrice, PreCheckoutQuery, FSInputFile, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, LabeledPrice, PreCheckoutQuery, FSInputFile
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.exceptions import TelegramBadRequest
 
 logging.basicConfig(level=logging.INFO)
 
-# ========================= НАСТРОЙКИ МУЛЬТИБОТА И КАНАЛОВ =========================
+# ========================= НАСТРОЙКИ =========================
 
 MAIN_TOKENS = [
     "8971264936:AAGnz7N90o_T1_EUEa694KTZThdFWGFhqgI",
@@ -177,7 +177,7 @@ async def init_db():
     """)
     await db.commit()
 
-# ========================= ХЕЛПЕРЫ И ЗАЩИТА БАЛАНСА =========================
+# ========================= ХЕЛПЕРЫ =========================
 
 async def get_setting(key: str) -> str:
     async with db.execute("SELECT value FROM settings WHERE key = ?", (key,)) as cur:
@@ -246,11 +246,8 @@ async def broadcast_event_start(title: str, description: str, duration_hours: in
             logging.error(f"Ошибка публикации в канал ивентов: {e}")
     await send_to_all_bots(text)
 
-# ========================= МИДЛВАРЬ БАНА И АВТО-СБРОСА ПРЕМИУМА =========================
+# ========================= МИДЛВАРЬ =========================
 
-router = Router()
-
-# Правильный класс мидлвари
 class BanMiddleware(BaseMiddleware):
     async def __call__(self, handler, event, data):
         user = data.get("event_from_user")
@@ -403,7 +400,9 @@ def admin_events_kb():
     kb.adjust(1)
     return kb.as_markup()
 
-# ========================= ХЕНДЛЕР СТАРТА И РЕФЕРАЛОВ =========================
+# ========================= ХЕНДЛЕРЫ =========================
+
+router = Router()
 
 @router.message(Command("start"))
 async def start(message: Message, bot: Bot):
@@ -525,8 +524,6 @@ async def check_sub(callback: CallbackQuery, bot: Bot):
     else:
         await callback.answer("❌ Ты не подписался на все каналы!", show_alert=True)
 
-# ========================= ДИНАМИЧЕСКИЕ ЗАДАНИЯ =========================
-
 @router.callback_query(F.data == "tasks_menu")
 async def tasks_menu(callback: CallbackQuery):
     user_id = callback.from_user.id
@@ -596,8 +593,6 @@ async def check_task_status(callback: CallbackQuery, bot: Bot):
     else:
         await callback.answer("❌ Вы не подписались на канал спонсора или не открыли бота в нем!", show_alert=True)
 
-# ========================= АНТИ-ДЮП ПРОСМОТР МЕДИАФАЙЛОВ =========================
-
 @router.callback_query(F.data == "watch")
 async def watch(callback: CallbackQuery, bot: Bot):
     user_id = callback.from_user.id
@@ -665,8 +660,6 @@ async def watch_photo(callback: CallbackQuery, bot: Bot):
     if is_lucky: await add_diamonds(user_id, 2.0)
     await bot.send_photo(chat_id=user_id, photo=FSInputFile(random.choice(photos)), caption="🍀 Счастливый час: +2 💎!" if is_lucky else None)
     await callback.answer()
-
-# ========================= АНТИ-ДЮП ПРОМОКОДЫ И ЧЕКИ =========================
 
 @router.callback_query(F.data == "promo_menu")
 async def promo_menu(callback: CallbackQuery):
@@ -837,8 +830,6 @@ async def process_check_uses(message: Message, state: FSMContext):
     )
     await message.answer(beautiful_check_text, reply_markup=main_menu(message.from_user.id))
 
-# ========================= ТАБЛИЦА ЛИДЕРОВ (ТОП-10 С АЙДИ) =========================
-
 @router.callback_query(F.data == "leaderboard")
 async def leaderboard_menu(callback: CallbackQuery):
     async with db.execute("SELECT user_id, first_name, diamonds FROM users WHERE diamonds >= 0 ORDER BY diamonds DESC LIMIT 10") as cur: 
@@ -858,8 +849,6 @@ async def leaderboard_menu(callback: CallbackQuery):
     kb = InlineKeyboardBuilder()
     kb.button(text="◀️ Назад в меню", callback_data="back_main")
     await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup())
-
-# ========================= АДМИНИСТРАТИВНАЯ ПАНЕЛЬ И УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ =========================
 
 @router.callback_query(F.data == "admin_enter")
 async def admin_enter(callback: CallbackQuery):
@@ -966,8 +955,6 @@ async def adm_unban(callback: CallbackQuery, state: FSMContext):
     await callback.answer("🔓 Полностью разблокирован!", show_alert=True)
     await callback.message.answer("Выполнено.", reply_markup=admin_menu())
 
-# ========================= ПРОСМОТР И ОЧИСТКА ПРОМОКОДОВ (АДМИН) =========================
-
 @router.callback_query(F.data == "admin_active_promos")
 async def admin_active_promos(callback: CallbackQuery):
     if callback.from_user.id not in ADMIN_IDS: 
@@ -1045,8 +1032,6 @@ async def admin_delete_promo_callback(callback: CallbackQuery):
         logging.error(f"Ошибка при удалении промокода: {e}")
         await callback.answer("⚠️ Не удалось удалить промокод.", show_alert=True)
 
-# ========================= ИНСТРУМЕНТ СОЗДАНИЯ ЗАДАНИЙ (АДМИН) =========================
-
 @router.callback_query(F.data == "admin_add_task")
 async def admin_add_task_start(callback: CallbackQuery, state: FSMContext):
     if callback.from_user.id not in ADMIN_IDS: return
@@ -1076,8 +1061,6 @@ async def process_admin_create_task(message: Message, state: FSMContext):
         await message.answer("✅ <b>Задание создано!</b> Оно автоматически появилось в меню 'Задания от спонсоров'.", reply_markup=admin_menu())
     except Exception as e:
         await message.answer(f"❌ Ошибка парсинга строки. Проверьте разделители и формат! Лог: {e}")
-
-# ========================= МАГАЗИН И ПЛАТЕЖИ СТАРС =========================
 
 @router.callback_query(F.data == "shop_main")
 async def shop_main(callback: CallbackQuery):
@@ -1164,25 +1147,6 @@ async def buy_diamonds_stars(callback: CallbackQuery):
         except Exception:
             await callback.answer("❌ Ошибка создания инвойса Stars.", show_alert=True)
 
-# ========================= ОБРАБОТЧИК ПЛАТЕЖЕЙ =========================
-
-@router.pre_checkout_query()
-async def pre_checkout_query(query: PreCheckoutQuery):
-    await query.answer(ok=True)
-
-@router.message(F.successful_payment)
-async def global_successful_payment(message: Message):
-    payload = message.successful_payment.invoice_payload
-    if payload.startswith("buy_diamonds:"):
-        diamonds = int(payload.split(":")[1])
-        if await is_event_active("global_x3_stars_until"): 
-            diamonds *= 3
-        await add_diamonds(message.from_user.id, float(diamonds))
-        x3_msg = " [⚡️ Сработал Ивент Х3!]" if await is_event_active("global_x3_stars_until") else ""
-        await message.answer(f"🎉 <b>Оплата зачислена!</b> +<b>{diamonds}</b> 💎.{x3_msg}")
-
-# ========================= КАТЕГОРИИ МАГАЗИНА =========================
-
 @router.callback_query(F.data == "cat_abilities")
 async def cat_abilities(callback: CallbackQuery):
     user_id = callback.from_user.id
@@ -1268,8 +1232,6 @@ async def buy_prem_plus(callback: CallbackQuery):
     await callback.answer("🔥 PREMIUM+ статус активирован!", show_alert=True)
     await shop_main(callback)
 
-# ========================= СТАНДАРТНЫЕ МЕНЮ =========================
-
 @router.callback_query(F.data == "back_main")
 async def back_main(callback: CallbackQuery):
     udata = await get_user_data(callback.from_user.id)
@@ -1282,8 +1244,6 @@ async def static_callbacks(callback: CallbackQuery, bot: Bot):
         await callback.message.edit_text(f"👥 Реф. ссылка:\n<code>https://t.me/{me.username}?start={callback.from_user.id}</code>\n\nПриглашение: +4 💎\n\n<i>Важно: Алмазы поступят на твой аккаунт только после подписки приглашенного на каналы спонсоров!</i>", reply_markup=InlineKeyboardBuilder().button(text="◀️ Назад", callback_data="back_main").as_markup())
     elif callback.data == "support":
         await callback.message.edit_text("🛠 ТП: @твой_юзернейм", reply_markup=InlineKeyboardBuilder().button(text="◀️ Назад", callback_data="back_main").as_markup())
-
-# ========================= УПРАВЛЕНИЕ ИВЕНТАМИ И СТАТИСТИКА (АДМИН) =========================
 
 @router.callback_query(F.data == "admin_stats")
 async def admin_stats(callback: CallbackQuery):
@@ -1429,39 +1389,44 @@ async def process_admin_mailing(message: Message, state: FSMContext):
     await send_to_all_bots(text)
     await message.answer("✅ Рассылка завершена.")
 
-# ========================= СИСТЕМНЫЕ ФУНКЦИИ И ОЧИСТКА =========================
+# ========================= СИСТЕМНЫЕ ФУНКЦИИ =========================
 
 async def delete_old_videos():
     while True:
         await asyncio.sleep(30)
         try:
-            async with db.execute("SELECT message_id, chat_id FROM videos WHERE delete_at <= ?", (datetime.now().isoformat(),)) as cur: rows = await cur.fetchall()
+            async with db.execute("SELECT message_id, chat_id FROM videos WHERE delete_at <= ?", (datetime.now().isoformat(),)) as cur: 
+                rows = await cur.fetchall()
             if rows and GLOBAL_BOTS_POOL:
                 main_bot = GLOBAL_BOTS_POOL[0]
                 for mid, cid in rows:
-                    try: await main_bot.delete_message(cid, mid)
-                    except Exception: pass
+                    try: 
+                        await main_bot.delete_message(cid, mid)
+                    except Exception: 
+                        pass
                     await db.execute("DELETE FROM videos WHERE message_id = ? AND chat_id = ?", (mid, cid))
                 await db.commit()
-        except Exception: pass
+        except Exception: 
+            pass
 
-# ========================= ГЛАВНЫЙ ЗАПУСК СИСТЕМЫ =========================
+# ========================= ГЛАВНЫЙ ЗАПУСК =========================
 
 async def main():
     await init_db()
     
-    # Запускаем фоновую задачу для удаления старых видео
+    # Запускаем фоновую задачу
     asyncio.create_task(delete_old_videos())
     
     print("🚀 Запуск пула мультиботов...")
     
-    # Создаем отдельный Dispatcher для каждого бота
+    # Для каждого токена создаем отдельный Dispatcher
     for token in MAIN_TOKENS:
         try:
-            # Создаем бота
+            print(f"📱 Запускаю бота с токеном: {token[:10]}...")
+            
             bot_instance = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
             
-            # Создаем отдельный Dispatcher для этого бота
+            # Создаем отдельный Dispatcher для каждого бота
             dp = Dispatcher()
             
             # Подключаем мидлварь
@@ -1470,7 +1435,7 @@ async def main():
             # Подключаем роутер с хендлерами
             dp.include_router(router)
             
-            # Добавляем обработчики платежей
+            # Добавляем обработчики платежей для этого бота
             @dp.pre_checkout_query()
             async def pre_checkout_query_handler(query: PreCheckoutQuery):
                 await query.answer(ok=True)
@@ -1502,8 +1467,10 @@ async def main():
             
         except Exception as e:
             print(f"❌ Ошибка запуска бота с токеном {token.split(':')[0]}: {e}")
+            import traceback
+            traceback.print_exc()
             
-    print("🤖 Все боты активны. Ожидание событий...")
+    print(f"🤖 Все боты активны. Всего ботов: {len(GLOBAL_BOTS_POOL)}")
     
     # Держим бота активным
     while True:
@@ -1514,3 +1481,7 @@ if __name__ == "__main__":
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         print("🛑 Бот остановлен.")
+    except Exception as e:
+        print(f"❌ Критическая ошибка: {e}")
+        import traceback
+        traceback.print_exc()
