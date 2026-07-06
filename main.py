@@ -1449,40 +1449,63 @@ async def delete_old_videos():
 
 async def main():
     await init_db()
-    dp = Dispatcher()
     
-    # Подключение мидлвари
-    dp.update.outer_middleware(BanMiddleware())
-    dp.include_router(router)
-
-    # Обработчик платежей
-    @dp.pre_checkout_query()
-    async def pre_checkout_query_handler(query: PreCheckoutQuery):
-        await query.answer(ok=True)
-
-    @dp.message(F.successful_payment)
-    async def payment_success_handler(message: Message):
-        payload = message.successful_payment.invoice_payload
-        if payload.startswith("buy_diamonds:"):
-            diamonds = int(payload.split(":")[1])
-            if await is_event_active("global_x3_stars_until"): 
-                diamonds *= 3
-            await add_diamonds(message.from_user.id, float(diamonds))
-            x3_msg = " [⚡️ Сработал Ивент Х3!]" if await is_event_active("global_x3_stars_until") else ""
-            await message.answer(f"🎉 <b>Оплата зачислена!</b> +<b>{diamonds}</b> 💎.{x3_msg}")
+    # Запускаем фоновую задачу для удаления старых видео
+    asyncio.create_task(delete_old_videos())
     
     print("🚀 Запуск пула мультиботов...")
+    
+    # Создаем отдельный Dispatcher для каждого бота
     for token in MAIN_TOKENS:
         try:
+            # Создаем бота
             bot_instance = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+            
+            # Создаем отдельный Dispatcher для этого бота
+            dp = Dispatcher()
+            
+            # Подключаем мидлварь
+            dp.update.outer_middleware(BanMiddleware())
+            
+            # Подключаем роутер с хендлерами
+            dp.include_router(router)
+            
+            # Добавляем обработчики платежей
+            @dp.pre_checkout_query()
+            async def pre_checkout_query_handler(query: PreCheckoutQuery):
+                await query.answer(ok=True)
+
+            @dp.message(F.successful_payment)
+            async def payment_success_handler(message: Message):
+                payload = message.successful_payment.invoice_payload
+                if payload.startswith("buy_diamonds:"):
+                    diamonds = int(payload.split(":")[1])
+                    if await is_event_active("global_x3_stars_until"): 
+                        diamonds *= 3
+                    await add_diamonds(message.from_user.id, float(diamonds))
+                    x3_msg = " [⚡️ Сработал Ивент Х3!]" if await is_event_active("global_x3_stars_until") else ""
+                    await message.answer(f"🎉 <b>Оплата зачислена!</b> +<b>{diamonds}</b> 💎.{x3_msg}")
+            
+            # Сохраняем бота в пул
             GLOBAL_BOTS_POOL.append(bot_instance)
+            
+            # Удаляем вебхук
             await bot_instance.delete_webhook(drop_pending_updates=True)
-            asyncio.create_task(dp.start_polling(bot_instance, allowed_updates=dp.resolve_used_update_types()))
+            
+            # Запускаем поллинг в отдельной задаче
+            asyncio.create_task(dp.start_polling(
+                bot_instance, 
+                allowed_updates=dp.resolve_used_update_types()
+            ))
+            
             print(f"✅ Бот [{token.split(':')[0]}] успешно запущен.")
+            
         except Exception as e:
             print(f"❌ Ошибка запуска бота с токеном {token.split(':')[0]}: {e}")
             
     print("🤖 Все боты активны. Ожидание событий...")
+    
+    # Держим бота активным
     while True:
         await asyncio.sleep(3600)
 
