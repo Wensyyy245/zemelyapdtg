@@ -95,12 +95,12 @@ GLOBAL_BOTS_POOL = []
 
 class AdminStates(StatesGroup):
     mailing_text = State()
-    user_manage_id = State()    
-    user_change_diamonds = State() 
-    user_ban_time = State()     
-    event_percent = State()    
-    event_hours = State()      
-    event_giveaway = State()   
+    user_manage_id = State()
+    user_change_diamonds = State()
+    user_ban_time = State()
+    event_percent = State()
+    event_hours = State()
+    event_giveaway = State()
     economy_value = State()
     pack_name = State()
     pack_description = State()
