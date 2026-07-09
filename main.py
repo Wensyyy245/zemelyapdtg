@@ -44,10 +44,12 @@ EVENT_CHANNEL_ID = -1004466816546
 DATA_DIR = Path("data")
 MEDIA_DIR = DATA_DIR / "media"
 PHOTO_DIR = DATA_DIR / "photo"
+PACKS_DIR = DATA_DIR / "packs"
 
 DATA_DIR.mkdir(exist_ok=True)
 MEDIA_DIR.mkdir(exist_ok=True)
 PHOTO_DIR.mkdir(exist_ok=True)
+PACKS_DIR.mkdir(exist_ok=True)
 
 DB_PATH = DATA_DIR / "bot.db"
 db = None
@@ -65,6 +67,10 @@ class AdminStates(StatesGroup):
     event_hours = State()      
     event_giveaway = State()   
     create_task_data = State()  
+    pack_name = State()
+    pack_description = State()
+    pack_price = State()
+    pack_file = State()
 
 class PromoStates(StatesGroup):
     create_code = State()
@@ -174,6 +180,17 @@ async def init_db():
             user_id INTEGER,
             task_id INTEGER,
             PRIMARY KEY (user_id, task_id)
+        )
+    """)
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS packs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT,
+            description TEXT,
+            price INTEGER,
+            photo_path TEXT,
+            file_path TEXT,
+            created_at TEXT
         )
     """)
     await db.commit()
@@ -342,6 +359,7 @@ def main_menu(user_id: int):
     kb = InlineKeyboardBuilder()
     kb.button(text="📺 Смотреть видео (6 💎)", callback_data="watch")
     kb.button(text="📸 Посмотреть фото (3 💎)", callback_data="watch_photo")
+    kb.button(text="🎁 Паки", callback_data="packs_menu")
     kb.button(text="🔥 Задания от спонсоров", callback_data="tasks_menu")
     kb.button(text="🛒 Магазин 💰", callback_data="shop_main")
     kb.button(text="🎟 Чеки / Промо", callback_data="promo_menu")
@@ -410,6 +428,7 @@ def admin_menu():
     kb = InlineKeyboardBuilder()
     kb.button(text="📊 Статистика", callback_data="admin_stats")
     kb.button(text="👤 Управление юзерами (💎/🚫)", callback_data="admin_manage_users")
+    kb.button(text="📦 Управление Паками", callback_data="admin_packs")
     kb.button(text="🎫 Активные промокоды", callback_data="admin_active_promos")
     kb.button(text="🗑 Удалить ВСЕ промокоды", callback_data="admin_delete_all_promos")
     kb.button(text="➕ Создать Задание (Оффер)", callback_data="admin_add_task")
@@ -692,6 +711,53 @@ async def watch_photo(callback: CallbackQuery, bot: Bot):
     if is_lucky: await add_diamonds(user_id, 2.0)
     await bot.send_photo(chat_id=user_id, photo=FSInputFile(random.choice(photos)), caption="🍀 Счастливый час: +2 💎!" if is_lucky else None)
     await callback.answer()
+
+@router.callback_query(F.data == "packs_menu")
+async def packs_menu(callback: CallbackQuery):
+    async with db.execute("SELECT id, name, description, price, photo_path FROM packs ORDER BY id DESC") as cur:
+        packs = await cur.fetchall()
+    
+    if not packs:
+        kb = InlineKeyboardBuilder()
+        kb.button(text="◀️ Назад в меню", callback_data="back_main")
+        return await callback.message.edit_text("🎁 <b>Паки</b>\n\nПока нет доступных паков.", reply_markup=kb.as_markup())
+    
+    text = "🎁 <b>Доступные паки:</b>\n\n"
+    kb = InlineKeyboardBuilder()
+    
+    for pack_id, name, desc, price, photo_path in packs:
+        text += f"📦 <b>{name}</b> — {price} ⭐️\n<i>{desc}</i>\n\n"
+        kb.button(text=f"Купить {name} ({price} ⭐️)", callback_data=f"buy_pack_{pack_id}")
+    
+    kb.button(text="◀️ Назад в меню", callback_data="back_main")
+    kb.adjust(1)
+    
+    await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=kb.as_markup())
+
+@router.callback_query(F.data.startswith("buy_pack_"))
+async def buy_pack(callback: CallbackQuery):
+    pack_id = int(callback.data.split("_")[2])
+    
+    async with db.execute("SELECT name, description, price, file_path FROM packs WHERE id = ?", (pack_id,)) as cur:
+        pack = await cur.fetchone()
+    
+    if not pack:
+        return await callback.answer("Пак не найден!", show_alert=True)
+    
+    name, desc, price, file_path = pack
+    
+    try:
+        await callback.message.answer_invoice(
+            title=f"Пак: {name}",
+            description=desc,
+            payload=f"buy_pack:{pack_id}",
+            currency="XTR",
+            prices=[LabeledPrice(label=f"Пак {name}", amount=price)]
+        )
+        await callback.answer()
+    except Exception as e:
+        logging.error(f"Ошибка создания инвойса для пака: {e}")
+        await callback.answer("❌ Ошибка создания счета.", show_alert=True)
 
 @router.callback_query(F.data == "promo_menu")
 async def promo_menu(callback: CallbackQuery):
@@ -987,6 +1053,179 @@ async def adm_unban(callback: CallbackQuery, state: FSMContext):
     await callback.answer("🔓 Полностью разблокирован!", show_alert=True)
     await callback.message.answer("Выполнено.", reply_markup=admin_menu())
 
+@router.callback_query(F.data == "admin_packs")
+async def admin_packs(callback: CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS: return
+    
+    async with db.execute("SELECT id, name, price FROM packs ORDER BY id DESC") as cur:
+        packs = await cur.fetchall()
+    
+    text = "📦 <b>Управление Паками</b>\n\n"
+    kb = InlineKeyboardBuilder()
+    
+    if packs:
+        text += "Существующие паки:\n"
+        for pack_id, name, price in packs:
+            text += f"• {name} — {price} ⭐️\n"
+            kb.button(text=f"❌ Удалить {name}", callback_data=f"del_pack_{pack_id}")
+    
+    kb.button(text="➕ Создать Пак", callback_data="create_pack_start")
+    kb.button(text="◀️ Назад в Админку", callback_data="admin_enter")
+    kb.adjust(1)
+    
+    await callback.message.edit_text(text, reply_markup=kb.as_markup())
+
+@router.callback_query(F.data == "create_pack_start")
+async def create_pack_start(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in ADMIN_IDS: return
+    await callback.message.edit_text("📸 <b>Шаг 1/5:</b> Отправьте фото-обложку для пака:")
+    await state.set_state(AdminStates.pack_name)
+    await state.update_data(pack_step="photo")
+
+@router.message(AdminStates.pack_name, F.photo)
+async def process_pack_photo(message: Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS: return
+    
+    # Сохраняем фото
+    photo = message.photo[-1]
+    file = await message.bot.get_file(photo.file_id)
+    photo_path = PACKS_DIR / f"pack_{uuid.uuid4().hex[:8]}.jpg"
+    await message.bot.download_file(file.file_path, destination=photo_path)
+    
+    await state.update_data(pack_photo=str(photo_path))
+    await message.answer("📝 <b>Шаг 2/5:</b> Введите название пака:")
+    await state.set_state(AdminStates.pack_description)
+
+@router.message(AdminStates.pack_name)
+async def process_pack_name_invalid(message: Message):
+    await message.answer("❌ Пожалуйста, отправьте именно фото (изображение)!")
+
+@router.message(AdminStates.pack_description)
+async def process_pack_name(message: Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS: return
+    name = message.text.strip()
+    if len(name) > 100:
+        return await message.answer("❌ Название слишком длинное (макс 100 символов)!")
+    
+    await state.update_data(pack_name=name)
+    await message.answer("📄 <b>Шаг 3/5:</b> Введите описание пака:")
+    await state.set_state(AdminStates.pack_price)
+
+@router.message(AdminStates.pack_price)
+async def process_pack_description(message: Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS: return
+    desc = message.text.strip()
+    if len(desc) > 500:
+        return await message.answer("❌ Описание слишком длинное (макс 500 символов)!")
+    
+    await state.update_data(pack_description=desc)
+    await message.answer("💎 <b>Шаг 4/5:</b> Введите цену пака в Звездах (целое число):")
+    await state.set_state(AdminStates.pack_file)
+
+@router.message(AdminStates.pack_file)
+async def process_pack_price(message: Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS: return
+    text = message.text.strip()
+    if not text.isdigit() or int(text) <= 0:
+        return await message.answer("❌ Цена должна быть положительным целым числом!")
+    
+    await state.update_data(pack_price=int(text))
+    await message.answer("📁 <b>Шаг 5/5:</b> Отправьте файл, который будут получать покупатели:")
+    await state.set_state(AdminStates.pack_name)
+    await state.update_data(pack_step="file")
+
+@router.message(AdminStates.pack_name, F.document | F.video | F.photo | F.audio | F.voice | F.video_note | F.animation | F.sticker)
+async def process_pack_file(message: Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS: return
+    
+    # Сохраняем файл
+    data = await state.get_data()
+    await state.clear()
+    
+    if message.document:
+        file_id = message.document.file_id
+        file_name = message.document.file_name or f"file_{uuid.uuid4().hex[:8]}"
+        file = await message.bot.get_file(file_id)
+        ext = Path(file_name).suffix
+    elif message.video:
+        file_id = message.video.file_id
+        file_name = f"video_{uuid.uuid4().hex[:8]}.mp4"
+        file = await message.bot.get_file(file_id)
+        ext = ".mp4"
+    elif message.photo:
+        file_id = message.photo[-1].file_id
+        file_name = f"photo_{uuid.uuid4().hex[:8]}.jpg"
+        file = await message.bot.get_file(file_id)
+        ext = ".jpg"
+    elif message.audio:
+        file_id = message.audio.file_id
+        file_name = message.audio.file_name or f"audio_{uuid.uuid4().hex[:8]}.mp3"
+        file = await message.bot.get_file(file_id)
+        ext = Path(file_name).suffix
+    elif message.voice:
+        file_id = message.voice.file_id
+        file_name = f"voice_{uuid.uuid4().hex[:8]}.ogg"
+        file = await message.bot.get_file(file_id)
+        ext = ".ogg"
+    elif message.video_note:
+        file_id = message.video_note.file_id
+        file_name = f"videonote_{uuid.uuid4().hex[:8]}.mp4"
+        file = await message.bot.get_file(file_id)
+        ext = ".mp4"
+    elif message.animation:
+        file_id = message.animation.file_id
+        file_name = message.animation.file_name or f"gif_{uuid.uuid4().hex[:8]}.gif"
+        file = await message.bot.get_file(file_id)
+        ext = ".gif"
+    elif message.sticker:
+        file_id = message.sticker.file_id
+        file_name = f"sticker_{uuid.uuid4().hex[:8]}.webp"
+        file = await message.bot.get_file(file_id)
+        ext = ".webp"
+    else:
+        return await message.answer("❌ Неподдерживаемый тип файла!")
+    
+    file_path = PACKS_DIR / file_name
+    await message.bot.download_file(file.file_path, destination=file_path)
+    
+    # Сохраняем в БД
+    await db.execute(
+        "INSERT INTO packs (name, description, price, photo_path, file_path, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (data['pack_name'], data['pack_description'], data['pack_price'], data['pack_photo'], str(file_path), datetime.now().isoformat())
+    )
+    await db.commit()
+    
+    await message.answer(
+        f"✅ <b>Пак успешно создан!</b>\n\n"
+        f"📦 Название: {data['pack_name']}\n"
+        f"💎 Цена: {data['pack_price']} ⭐️\n"
+        f"📄 Описание: {data['pack_description']}",
+        reply_markup=admin_menu()
+    )
+
+@router.callback_query(F.data.startswith("del_pack_"))
+async def delete_pack(callback: CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS: return
+    pack_id = int(callback.data.split("_")[2])
+    
+    async with db.execute("SELECT photo_path, file_path FROM packs WHERE id = ?", (pack_id,)) as cur:
+        pack = await cur.fetchone()
+    
+    if pack:
+        # Удаляем файлы с диска
+        for path in [pack[0], pack[1]]:
+            if path and Path(path).exists():
+                try:
+                    Path(path).unlink()
+                except Exception:
+                    pass
+    
+    await db.execute("DELETE FROM packs WHERE id = ?", (pack_id,))
+    await db.commit()
+    
+    await callback.answer("✅ Пак удален!", show_alert=True)
+    await admin_packs(callback)
+
 @router.callback_query(F.data == "admin_active_promos")
 async def admin_active_promos(callback: CallbackQuery):
     if callback.from_user.id not in ADMIN_IDS: 
@@ -1281,6 +1520,7 @@ async def static_callbacks(callback: CallbackQuery, bot: Bot):
 async def admin_stats(callback: CallbackQuery):
     if callback.from_user.id not in ADMIN_IDS: return
     async with db.execute("SELECT COUNT(*) FROM users") as cur: total_users = (await cur.fetchone())[0]
+    async with db.execute("SELECT COUNT(*) FROM packs") as cur: total_packs = (await cur.fetchone())[0]
     
     x2_active = "✅ Активен" if await is_event_active("global_x2_until") else "❌ Выключен"
     is_disc = await is_event_active("global_discount_until")
@@ -1293,6 +1533,7 @@ async def admin_stats(callback: CallbackQuery):
     text = (
         f"📊 <b>Статистика Системы:</b>\n\n"
         f"👥 Пользователей в БД: <b>{total_users}</b>\n"
+        f"📦 Паков создано: <b>{total_packs}</b>\n"
         f"🪞 Активных ботов в пуле: <b>{len(GLOBAL_BOTS_POOL)}</b>\n\n"
         f"🔥 <b>Текущие Ивенты:</b>\n"
         f"🚀 Глобальный х2 реф: {x2_active}\n"
@@ -1460,7 +1701,6 @@ async def admin_delete_all_promos(callback: CallbackQuery):
         logging.error(f"Ошибка удаления всех промо: {e}")
         await callback.answer("⚠️ Ошибка при очистке.", show_alert=True)
 
-
 @router.callback_query(F.data == "admin_toggle_maintenance")
 async def admin_toggle_maintenance(callback: CallbackQuery):
     if callback.from_user.id not in ADMIN_IDS:
@@ -1473,7 +1713,6 @@ async def admin_toggle_maintenance(callback: CallbackQuery):
     status = "✅ ВКЛЮЧЕН" if new_state == "true" else "❌ ВЫКЛЮЧЕН"
     await callback.answer(f"Техработы: {status}", show_alert=True)
     
-    # Обновляем текст, чтобы избежать ошибки "message is not modified"
     await callback.message.edit_text(
         f"🛠 <b>Административная Панель</b>\n\n"
         f"Технические работы: <b>{status}</b>",
@@ -1504,6 +1743,7 @@ async def main():
     @dp.message(F.successful_payment)
     async def payment_success_handler(message: Message):
         payload = message.successful_payment.invoice_payload
+        
         if payload.startswith("buy_diamonds:"):
             diamonds = int(payload.split(":")[1])
             if await is_event_active("global_x3_stars_until"):
@@ -1511,6 +1751,26 @@ async def main():
             await add_diamonds(message.from_user.id, float(diamonds))
             x3_msg = " [⚡️ Сработал Ивент Х3!]" if await is_event_active("global_x3_stars_until") else ""
             await message.answer(f"🎉 <b>Оплата зачислена!</b> +<b>{diamonds}</b> 💎.{x3_msg}")
+        
+        elif payload.startswith("buy_pack:"):
+            pack_id = int(payload.split(":")[1])
+            async with db.execute("SELECT name, file_path FROM packs WHERE id = ?", (pack_id,)) as cur:
+                pack = await cur.fetchone()
+            
+            if pack:
+                name, file_path = pack
+                try:
+                    # Отправляем файл
+                    with open(file_path, 'rb') as f:
+                        await message.answer_document(
+                            document=FSInputFile(file_path),
+                            caption=f"🎁 <b>Спасибо за покупку пака «{name}»!</b>\n\nНаслаждайтесь контентом!"
+                        )
+                except Exception as e:
+                    logging.error(f"Ошибка отправки файла пака: {e}")
+                    await message.answer("❌ Ошибка при отправке файла. Свяжитесь с администратором.")
+            else:
+                await message.answer("❌ Пак не найден в базе данных.")
 
     for token in MAIN_TOKENS:
         try:
