@@ -26,10 +26,10 @@ asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
 
 # ========================= НАСТРОЙКИ =========================
 
-MAIN_BOT_TOKEN = "8738481369:AAETgNkJVLPA-UYN6kkPdq73d97iuemVYOI"          # ваш основной бот
-PAYMENT_BOT_TOKEN = "8971264936:AAGnz7N90o_T1_EUEa694KTZThdFWGFhqgI"      # бот для оплаты
+MAIN_BOT_TOKEN = "8827652589:AAHyzLgyfWdw7SKy-rNd5IeMi-4MEcCDPck"          # ваш основной бот
+PAYMENT_BOT_TOKEN = "8947363174:AAG2Ly6FWUlcjKyZoSHJP04SCxQECtSV0CQ"      # бот для оплаты
 AUX_TOKENS = [
-    "8749652033:AAGxEa4xA2BU9wEUUcntIH3MfEoRVBniiwQ",                     # рекламные боты
+    "8971264936:AAGnz7N90o_T1_EUEa694KTZThdFWGFhqgI",                     # рекламные боты
 ]
 
 ADMIN_IDS = [
