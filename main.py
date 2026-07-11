@@ -24,9 +24,12 @@ logging.basicConfig(level=logging.INFO)
 asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
 # ========================= НАСТРОЙКИ =========================
 
-MAIN_TOKENS = [
-    "8971264936:AAGnz7N90o_T1_EUEa694KTZThdFWGFhqgI",
-    "8749652033:AAGxEa4xA2BU9wEUUcntIH3MfEoRVBniiwQ",
+# ========================= НАСТРОЙКИ =========================
+
+MAIN_BOT_TOKEN = "8738481369:AAETgNkJVLPA-UYN6kkPdq73d97iuemVYOI"          # ваш основной бот
+PAYMENT_BOT_TOKEN = "8971264936:AAGnz7N90o_T1_EUEa694KTZThdFWGFhqgI"      # бот для оплаты
+AUX_TOKENS = [
+    "8749652033:AAGxEa4xA2BU9wEUUcntIH3MfEoRVBniiwQ",                     # рекламные боты
 ]
 
 ADMIN_IDS = [
@@ -38,6 +41,7 @@ ADMIN_IDS = [
 
 CHANNELS = [
     (-1004466816546, "Наш канал", "https://t.me/+2kcAsXlm-TpkYjMy"),
+    ("@Zemlyankaaaaa", "Наш резерв", "https://t.me/Zemlyankaaaaa"),
     ("@PavelGiftsPG", "Спонсор", "https://t.me/PavelGiftsPG"),
 ]
 
@@ -54,58 +58,87 @@ PHOTO_DIR.mkdir(exist_ok=True)
 # ========================= ПАКИ =========================
 PACKS_DIR = DATA_DIR / "packs"
 PACKS_DIR.mkdir(exist_ok=True)
-
-PACKS = {
+# 🌟 Паки знаменитостей
+PACKSZVEZDA = {
     1: {
-        "name": "Пак 1",
-        "price": 100,
+        "name": "Пак Полины ШГШ",
+        "price": 30,
         "folder": PACKS_DIR / "pack1",
-        "mega_link": "https://mega.nz/folder/ВАША_ССЫЛКА1"
+        "mega_link": "https://mega.nz/folder/mbQCia4B#pLXxfYKpxKM0wRyd-29glQ"
     },
     2: {
-        "name": "Пак 2",
-        "price": 250,
+        "name": "Пак Златы",
+        "price": 30,
         "folder": PACKS_DIR / "pack2",
-        "mega_link": "https://mega.nz/folder/ВАША_ССЫЛКА2"
+        "mega_link": "https://mega.nz/folder/uWJlHY5a#V3EJuxs6-gKM9ZJgZa3CwA"
     },
     3: {
-        "name": "Пак 3",
+        "name": "Пак Янги18",
         "price": 400,
-        "folder": PACKS_DIR / "pack3",
-        "mega_link": "https://mega.nz/folder/ВАША_ССЫЛКА3"
-    },
-    4: {
-        "name": "Пак 4",
-        "price": 600,
-        "folder": PACKS_DIR / "pack4",
-        "mega_link": "https://mega.nz/folder/ВАША_ССЫЛКА4"
+        "folder": PACKS_DIR / "pack8",
+        "mega_link": "https://mega.nz/folder/cVklTYSJ#znRJ19C6CvCgsN_lZj2ZEw"
     }
 }
 
-# Создаем папки для паков, если их нет
-for pack_id, pack_data in PACKS.items():
-    pack_data["folder"].mkdir(exist_ok=True)
+# 📦 Прочие паки
+PROCHIEPAKI = {
+    4: {
+        "name": "Пак 1",
+        "price": 150,
+        "folder": PACKS_DIR / "pack3",
+        "mega_link": "https://mega.nz/folder/SMNWEIoA#BZagaT85jJGc0kcO-N-F3A"
+    },
+    5: {
+        "name": "Пак 2",
+        "price": 250,
+        "folder": PACKS_DIR / "pack4",
+        "mega_link": "https://mega.nz/folder/kiF2nb6T#FXuuQqFbxyDybJq7qomvHA"
+    },
+    6: {
+        "name": "Пак 3",
+        "price": 300,
+        "folder": PACKS_DIR / "pack5",
+        "mega_link": "https://mega.nz/folder/rmIB0T5L#ZAnu_nFzEPhq4UgZrouaBw"
+    },
+    7: {
+        "name": "Пак 4",
+        "price": 500,
+        "folder": PACKS_DIR / "pack7",
+        "mega_link": "https://mega.nz/folder/eNc3kZgK#eRFNRIOAUiQrH5tREGBDHQ"
+    }
+}
+
+# Создаем папки для всех паков
+for pack_dict in (PACKSZVEZDA, PROCHIEPAKI):
+    for pack_data in pack_dict.values():
+        pack_data["folder"].mkdir(exist_ok=True)
 
 DB_PATH = DATA_DIR / "bot.db"
 db = None
 
 GLOBAL_BOTS_POOL = []
+# Хранилище временных заказов для оплаты
+pending_payments = {}
 
 # ========================= СОСТОЯНИЯ (FSM) =========================
 
 class AdminStates(StatesGroup):
     mailing_text = State()
-    user_manage_id = State()
-    user_change_diamonds = State()
-    user_ban_time = State()
-    event_percent = State()
-    event_hours = State()
-    event_giveaway = State()
+    user_manage_id = State()    
+    user_change_diamonds = State() 
+    user_ban_time = State()     
+    event_percent = State()    
+    event_hours = State()      
+    event_giveaway = State()   
     economy_value = State()
     pack_name = State()
     pack_description = State()
     pack_price = State()
     pack_file = State()
+
+class GameStates(StatesGroup):
+    choose_game = State()
+    choose_bet = State()
 
 class PromoStates(StatesGroup):
     create_code = State()
@@ -149,6 +182,20 @@ async def init_db():
         await db.execute("ALTER TABLE users ADD COLUMN is_referral_rewarded INTEGER DEFAULT 0")
         await db.commit()
         print("✅ Миграция: добавлена колонка is_referral_rewarded")
+    except aiosqlite.OperationalError:
+        pass
+
+    try:
+        await db.execute("ALTER TABLE users ADD COLUMN daily_won REAL DEFAULT 0")
+        await db.commit()
+        print("✅ Миграция: добавлена колонка daily_won")
+    except aiosqlite.OperationalError:
+        pass
+
+    try:
+        await db.execute("ALTER TABLE users ADD COLUMN daily_reset_date TEXT DEFAULT NULL")
+        await db.commit()
+        print("✅ Миграция: добавлена колонка daily_reset_date")
     except aiosqlite.OperationalError:
         pass
 
@@ -304,6 +351,87 @@ async def broadcast_event_start(title: str, description: str, duration_str: str 
             logging.error(f"Ошибка публикации в канал ивентов: {e}")
     await send_to_all_bots(text)
 
+# ========================= НОВАЯ СИСТЕМА ОПЛАТЫ =========================
+
+async def generate_payment_link(user_id: int, item_type: str, item_data: dict) -> str:
+    """Генерирует уникальную ссылку на бота оплаты"""
+    payment_id = f"pay_{uuid.uuid4().hex[:12]}"
+    pending_payments[payment_id] = {
+        'user_id': user_id,
+        'item_type': item_type,
+        'item_data': item_data,
+        'created_at': datetime.now(),
+        'status': 'pending'
+    }
+    # Очистка старых заказов (старше 1 часа)
+    now = datetime.now()
+    expired = [k for k, v in pending_payments.items() if (now - v['created_at']).total_seconds() > 3600]
+    for k in expired:
+        del pending_payments[k]
+    # Получаем username платежного бота
+    payment_bot = Bot(token=PAYMENT_BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    me = await payment_bot.get_me()
+    await payment_bot.session.close()
+    return f"https://t.me/{me.username}?start={payment_id}"
+
+async def process_payment(user_id: int, payment_data: dict, main_bot: Bot):
+    """Выдаёт товар после оплаты"""
+    item_type = payment_data['item_type']
+    item_data = payment_data['item_data']
+    
+    if item_type == "diamonds":
+        diamonds = item_data['amount']
+        if await is_event_active("global_x3_stars_until"):
+            diamonds *= 3
+        await add_diamonds(user_id, float(diamonds))
+        x3_msg = " [⚡️ Х3 Ивент!]" if await is_event_active("global_x3_stars_until") else ""
+        try:
+            await main_bot.send_message(user_id, f"🎉 <b>Оплата зачислена!</b> +{diamonds} 💎{x3_msg}")
+        except:
+            pass
+    elif item_type == "ability_x2":
+        await db.execute("UPDATE users SET x2_until = ? WHERE user_id = ?", 
+                        ((datetime.now() + timedelta(hours=24)).isoformat(), user_id))
+        await db.commit()
+        try:
+            await main_bot.send_message(user_id, "🚀 <b>Буст х2 Рефералы активирован на 24 часа!</b>")
+        except:
+            pass
+    elif item_type == "ability_keep_videos":
+        await db.execute("UPDATE users SET keep_videos = 1 WHERE user_id = ?", (user_id,))
+        await db.commit()
+        try:
+            await main_bot.send_message(user_id, "♾ <b>Видео теперь сохраняются навсегда!</b>")
+        except:
+            pass
+    elif item_type == "mega_pack":
+        pack = item_data
+        try:
+            await main_bot.send_message(
+                user_id,
+                f"🎉 <b>{pack['name']} успешно оплачен!</b>\n\n"
+                f"🔗 <b>Ссылка на полный пак:</b>\n"
+                f"{pack['mega_link']}\n\n"
+                f"💾 Сохраните ссылку — она постоянная.",
+                disable_web_page_preview=True
+            )
+        except:
+            pass
+    elif item_type == "admin_pack":
+        pack_id = item_data['pack_id']
+        async with db.execute("SELECT name, file_path FROM admin_packs WHERE id = ?", (pack_id,)) as cur:
+            pack = await cur.fetchone()
+        if pack:
+            name, file_path = pack
+            try:
+                await main_bot.send_document(
+                    user_id,
+                    document=FSInputFile(file_path),
+                    caption=f"🎁 <b>Спасибо за покупку пака «{name}»!</b>"
+                )
+            except Exception as e:
+                logging.error(f"Ошибка отправки файла: {e}")
+
 # ========================= МИДЛВАРЬ =========================
 
 class BanMiddleware(BaseMiddleware):
@@ -340,7 +468,7 @@ class MaintenanceMiddleware(BaseMiddleware):
                 maintenance_text = (
                     "🛠 <b>Технические работы в боте!</b>\n\n"
                     "Бот временно недоступен.\n"
-                    "Следите за новостями в нашем канале: https://t.me/+ryYTkHSQG6VmNjUy"
+                    "Следите за новостями в нашем канале: https://t.me/+2kcAsXlm-TpkYjMy"
                 )
                 if isinstance(event, CallbackQuery):
                     try:
@@ -421,6 +549,8 @@ async def add_diamonds(user_id: int, amount: float):
     await db.commit()
     await check_auto_ban(user_id)
 
+
+
 # ========================= КЛАВИАТУРЫ =========================
 
 async def main_menu(user_id: int):
@@ -433,6 +563,7 @@ async def main_menu(user_id: int):
     kb.button(text=f"📸 Посмотреть фото ({photo_price:g} 💎)", callback_data="watch_photo")
     kb.button(text="🛒 Магазин 💰", callback_data="shop_main")
     kb.button(text="🎟 Промокоды", callback_data="promo_menu")
+    kb.button(text="🎮 Казино (Тест)", callback_data="casino_menu")
     kb.button(text="🏆 Таблица Лидеров", callback_data="leaderboard")
     kb.button(text="👥 Рефералы", callback_data="referral")
     kb.button(text="🛠 Техподдержка", callback_data="support")
@@ -501,7 +632,6 @@ def admin_menu():
     kb.button(text="👤 Управление юзерами (💎/🚫)", callback_data="admin_manage_users")
     kb.button(text="🚫 Забаненные пользователи", callback_data="admin_banned_list")
     kb.button(text="👑 Список админов", callback_data="admin_list_admins")
-    kb.button(text="📦 Управление Паками", callback_data="admin_packs_menu")
     kb.button(text="⚙️ Настройки экономики", callback_data="admin_economy")
     kb.button(text="📤 Экспорт пользователей (CSV)", callback_data="admin_export_users")
     kb.button(text="🎫 Активные промокоды", callback_data="admin_active_promos")
@@ -523,6 +653,28 @@ def admin_events_kb():
     kb.button(text="🍀 Запустить Счастливый Час (+2 💎)", callback_data="ev_setup_lucky_hour")
     kb.button(text="◀️ Назад в Админку", callback_data="admin_enter")
     kb.adjust(1)
+    return kb.as_markup()
+
+def casino_menu():
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🎲 Кости", callback_data="game_dice")
+    kb.button(text="⚽️ Футбол", callback_data="game_football")
+    kb.button(text="🎯 Дартс", callback_data="game_darts")
+    kb.button(text="🏀 Баскетбол", callback_data="game_basket")
+    kb.button(text="🎰 Слоты", callback_data="game_slots")
+    kb.button(text="🎳 Боулинг", callback_data="game_bowling")
+    kb.button(text="◀️ В главное меню", callback_data="back_main")
+    kb.adjust(2)
+    return kb.as_markup()
+
+
+def bet_keyboard(game_callback: str):
+    kb = InlineKeyboardBuilder()
+    kb.button(text="1 💎", callback_data=f"bet_{game_callback}_1")
+    kb.button(text="3 💎", callback_data=f"bet_{game_callback}_3")
+    kb.button(text="5 💎", callback_data=f"bet_{game_callback}_5")
+    kb.button(text="◀️ Назад", callback_data="casino_menu")
+    kb.adjust(3)
     return kb.as_markup()
 
 # ========================= ХЕНДЛЕРЫ =========================
@@ -1119,17 +1271,26 @@ async def buy_diamonds_stars(callback: CallbackQuery):
         if await is_event_active("global_discount_until"):
             pct = int(await get_setting("global_discount_percent"))
             stars_price = max(1, int(stars_price * (1 - pct / 100)))
-        try:
-            await callback.message.answer_invoice(
-                title=f"Покупка {diamonds} алмазов",
-                description=f"Начисление {diamonds} алмазов на баланс.",
-                payload=f"buy_diamonds:{diamonds}",
-                currency="XTR",
-                prices=[LabeledPrice(label="Telegram Stars", amount=stars_price)]
-            )
-            await callback.answer()
-        except Exception:
-            await callback.answer("❌ Ошибка создания инвойса Stars.", show_alert=True)
+        
+        payment_link = await generate_payment_link(
+            callback.from_user.id,
+            "diamonds",
+            {'amount': diamonds, 'price': stars_price}
+        )
+        
+        kb = InlineKeyboardBuilder()
+        kb.button(text="💳 Перейти к оплате", url=payment_link)
+        kb.button(text="◀️ Назад", callback_data="cat_diamonds")
+        kb.adjust(1)
+        
+        await callback.message.edit_text(
+            f"💎 <b>Покупка {diamonds} алмазов</b>\n\n"
+            f"💰 Сумма: {stars_price} ⭐️\n\n"
+            f"⚠️ Оплата производится через отдельного бота.\n"
+            f"Нажмите кнопку ниже для перехода:",
+            reply_markup=kb.as_markup()
+        )
+        await callback.answer()
 
 @router.callback_query(F.data == "cat_abilities")
 async def cat_abilities(callback: CallbackQuery):
@@ -1140,43 +1301,61 @@ async def cat_abilities(callback: CallbackQuery):
     except TelegramBadRequest: pass
 
 @router.callback_query(F.data == "buy_boost_x2")
-async def buy_boost_x2(callback: CallbackQuery, bot: Bot):
+async def buy_boost_x2(callback: CallbackQuery):
     is_disc = await is_event_active("global_discount_until")
     pct = int(await get_setting("global_discount_percent")) if is_disc else 0
     price = max(1, int(50 * (1 - pct / 100)))
-    try:
-        await bot.send_invoice(
-            chat_id=callback.from_user.id,
-            title="Буст х2 Рефералы (24ч)",
-            description="Ускоряет начисление наград от рефералов х2 на 24 часа.",
-            payload="ability_x2",
-            currency="XTR",
-            prices=[LabeledPrice(label="Telegram Stars", amount=price)]
-        )
-        await callback.answer()
-    except Exception:
-        await callback.answer("❌ Ошибка создания счета Stars.", show_alert=True)
+    
+    payment_link = await generate_payment_link(
+        callback.from_user.id,
+        "ability_x2",
+        {'price': price}
+    )
+    
+    kb = InlineKeyboardBuilder()
+    kb.button(text="💳 Перейти к оплате", url=payment_link)
+    kb.button(text="◀️ Назад", callback_data="cat_abilities")
+    kb.adjust(1)
+    
+    await callback.message.edit_text(
+        f"🚀 <b>Буст х2 Рефералы (24ч)</b>\n\n"
+        f"💰 Сумма: {price} ⭐️\n\n"
+        f"⚠️ Оплата через отдельного бота.\n"
+        f"Нажмите кнопку ниже:",
+        reply_markup=kb.as_markup()
+    )
+    await callback.answer()
 
 @router.callback_query(F.data == "buy_keep_videos")
-async def buy_keep_videos(callback: CallbackQuery, bot: Bot):
+async def buy_keep_videos(callback: CallbackQuery):
     user_id = callback.from_user.id
     udata = await get_user_data(user_id, callback.from_user.first_name, callback.from_user.username)
-    if udata["keep_videos"] == 1 or udata["premium"] == 2: return await callback.answer("Уже активно!", show_alert=True)
+    if udata["keep_videos"] == 1 or udata["premium"] == 2: 
+        return await callback.answer("Уже активно!", show_alert=True)
+    
     is_disc = await is_event_active("global_discount_until")
     pct = int(await get_setting("global_discount_percent")) if is_disc else 0
     price = max(1, int(150 * (1 - pct / 100)))
-    try:
-        await bot.send_invoice(
-            chat_id=user_id,
-            title="Видео навсегда",
-            description="Полученные видео больше никогда не будут удаляться.",
-            payload="ability_keep_videos",
-            currency="XTR",
-            prices=[LabeledPrice(label="Telegram Stars", amount=price)]
-        )
-        await callback.answer()
-    except Exception:
-        await callback.answer("❌ Ошибка создания счета Stars.", show_alert=True)
+    
+    payment_link = await generate_payment_link(
+        user_id,
+        "ability_keep_videos",
+        {'price': price}
+    )
+    
+    kb = InlineKeyboardBuilder()
+    kb.button(text="💳 Перейти к оплате", url=payment_link)
+    kb.button(text="◀️ Назад", callback_data="cat_abilities")
+    kb.adjust(1)
+    
+    await callback.message.edit_text(
+        f"♾ <b>Видео навсегда</b>\n\n"
+        f"💰 Сумма: {price} ⭐️\n\n"
+        f"⚠️ Оплата через отдельного бота.\n"
+        f"Нажмите кнопку ниже:",
+        reply_markup=kb.as_markup()
+    )
+    await callback.answer()
 
 @router.callback_query(F.data == "cat_premium")
 async def cat_premium(callback: CallbackQuery):
@@ -1239,18 +1418,70 @@ async def static_callbacks(callback: CallbackQuery, bot: Bot):
 @router.callback_query(F.data == "admin_stats")
 async def admin_stats(callback: CallbackQuery):
     if callback.from_user.id not in ADMIN_IDS: return
-    async with db.execute("SELECT COUNT(*) FROM users") as cur: total_users = (await cur.fetchone())[0]
-    async with db.execute("SELECT COALESCE(SUM(diamonds), 0) FROM users WHERE diamonds > 0") as cur: total_diamonds = (await cur.fetchone())[0]
-    async with db.execute("SELECT COUNT(*) FROM users WHERE is_banned = 1 OR banned_until > ?", (int(time.time()),)) as cur: banned_count = (await cur.fetchone())[0]
-    async with db.execute("SELECT COUNT(*) FROM users WHERE premium > 0") as cur: premium_count = (await cur.fetchone())[0]
-    async with db.execute("SELECT COUNT(*) FROM promo_codes") as cur: promo_count = (await cur.fetchone())[0]
-    async with db.execute("SELECT COUNT(*) FROM admin_packs") as cur: packs_count = (await cur.fetchone())[0]
-    admin_placeholders = ",".join("?" * len(ADMIN_IDS))
-    async with db.execute(
-        f"SELECT first_name, diamonds FROM users WHERE diamonds >= 0 AND user_id NOT IN ({admin_placeholders}) ORDER BY diamonds DESC LIMIT 3",
-        tuple(ADMIN_IDS)
-    ) as cur: top_rows = await cur.fetchall()
     
+    admin_placeholders = ",".join("?" * len(ADMIN_IDS))
+    params = tuple(ADMIN_IDS)
+    
+    # Общее количество пользователей
+    async with db.execute("SELECT COUNT(*) FROM users") as cur: 
+        total_users = (await cur.fetchone())[0]
+    
+    # Алмазы в плюсе (>= 0)
+    async with db.execute(
+        f"SELECT COALESCE(SUM(diamonds), 0) FROM users WHERE diamonds >= 0 AND user_id NOT IN ({admin_placeholders})",
+        params
+    ) as cur:
+        positive_diamonds = (await cur.fetchone())[0]
+    
+    # Алмазы в минусе (< 0)
+    async with db.execute(
+        f"SELECT COALESCE(SUM(diamonds), 0) FROM users WHERE diamonds < 0 AND user_id NOT IN ({admin_placeholders})",
+        params
+    ) as cur:
+        negative_diamonds = (await cur.fetchone())[0]
+    
+    # Забаненные
+    async with db.execute(
+        "SELECT COUNT(*) FROM users WHERE is_banned = 1 OR banned_until > ?", 
+        (int(time.time()),)
+    ) as cur: 
+        banned_count = (await cur.fetchone())[0]
+    
+    # Премиум
+    async with db.execute("SELECT COUNT(*) FROM users WHERE premium > 0") as cur: 
+        premium_count = (await cur.fetchone())[0]
+    
+    # Промокоды
+    async with db.execute("SELECT COUNT(*) FROM promo_codes") as cur: 
+        promo_count = (await cur.fetchone())[0]
+    
+    # Админ-паки
+    async with db.execute("SELECT COUNT(*) FROM admin_packs") as cur: 
+        packs_count = (await cur.fetchone())[0]
+
+    # Топ-10 по положительному балансу (без админов)
+    async with db.execute(
+        f"""SELECT first_name, diamonds 
+            FROM users 
+            WHERE diamonds >= 0 
+              AND user_id NOT IN ({admin_placeholders}) 
+            ORDER BY diamonds DESC LIMIT 10""",
+        params
+    ) as cur: 
+        top_positive = await cur.fetchall()
+
+    # Топ-10 по отрицательному балансу (без админов)
+    async with db.execute(
+        f"""SELECT first_name, diamonds 
+            FROM users 
+            WHERE diamonds < 0 
+              AND user_id NOT IN ({admin_placeholders}) 
+            ORDER BY diamonds ASC LIMIT 10""",
+        params
+    ) as cur: 
+        top_negative = await cur.fetchall()
+
+    # Ивенты
     x2_active = "✅ Активен" if await is_event_active("global_x2_until") else "❌ Выключен"
     is_disc = await is_event_active("global_discount_until")
     pct = await get_setting("global_discount_percent")
@@ -1259,18 +1490,26 @@ async def admin_stats(callback: CallbackQuery):
     free_view = "✅ Активен" if await is_event_active("global_free_view_until") else "❌ Выключен"
     lucky_hour = "✅ Активен" if await is_event_active("global_lucky_hour_until") else "❌ Выключен"
     
-    top_text = "\n".join(f"  {i}. {n} — {d:g} 💎" for i, (n, d) in enumerate(top_rows, 1)) if top_rows else "  нет данных"
-    
+    # Формирование топов
+    def format_top(rows, is_negative=False):
+        if not rows:
+            return "  нет данных"
+        medals = {1: "🥇", 2: "🥈", 3: "🥉"}
+        lines = []
+        for i, (name, diamonds) in enumerate(rows, 1):
+            medal = medals.get(i, f"{i}.")
+            lines.append(f"{medal} {name} — <b>{diamonds:g} 💎</b>")
+        return "\n".join(lines)
+
     text = (
         f"📊 <b>Статистика Системы:</b>\n\n"
         f"👥 Пользователей в БД: <b>{total_users}</b>\n"
-        f"💎 Алмазов в обороте: <b>{total_diamonds:g}</b>\n"
+        f"💎 Алмазов в плюсе: <b>{positive_diamonds:g}</b>\n"
+        f"📉 Алмазов в минусе: <b>{negative_diamonds:g}</b>\n"
         f"🚫 Забанено: <b>{banned_count}</b>\n"
         f"👑 С премиум-статусом: <b>{premium_count}</b>\n"
         f"🎫 Активных промокодов: <b>{promo_count}</b>\n"
-        f"📦 Админ-паков: <b>{packs_count}</b>\n"
         f"🪞 Активных ботов в пуле: <b>{len(GLOBAL_BOTS_POOL)}</b>\n\n"
-        f"🏆 <b>Топ-3 по балансу:</b>\n{top_text}\n\n"
         f"🔥 <b>Текущие Ивенты:</b>\n"
         f"🚀 Глобальный х2 реф: {x2_active}\n"
         f"📉 Скидки в шопе: {disc_active}\n"
@@ -1278,8 +1517,11 @@ async def admin_stats(callback: CallbackQuery):
         f"🆓 Бесплатные просмотры: {free_view}\n"
         f"🍀 Счастливый час (+2 💎): {lucky_hour}"
     )
-    await callback.message.edit_text(text, reply_markup=InlineKeyboardBuilder().button(text="◀️ Назад", callback_data="admin_enter").as_markup())
-
+    
+    await callback.message.edit_text(
+        text, 
+        reply_markup=InlineKeyboardBuilder().button(text="◀️ Назад", callback_data="admin_enter").as_markup()
+    )
 @router.callback_query(F.data == "admin_events_panel")
 async def admin_events_panel(callback: CallbackQuery):
     if callback.from_user.id not in ADMIN_IDS: return
@@ -1637,36 +1879,62 @@ async def admin_export_users(callback: CallbackQuery, bot: Bot):
 
 @router.callback_query(F.data == "cat_packs")
 async def cat_packs(callback: CallbackQuery):
-    # Показываем и админ-паки, и Mega-паки
     kb = InlineKeyboardBuilder()
-    
-    # Админские паки из БД
-    async with db.execute("SELECT id, name, price FROM admin_packs ORDER BY id DESC") as cur:
-        admin_packs_list = await cur.fetchall()
-    
-    for pack_id, name, price in admin_packs_list:
-        kb.button(text=f"📦 {name} — {price} ⭐️", callback_data=f"view_admin_pack_{pack_id}")
-    
-    # Mega-паки из словаря
-    for pid, pack in PACKS.items():
-        kb.button(text=f"📦 {pack['name']} — {pack['price']} ⭐️", callback_data=f"pack_preview_{pid}")
-    
+    kb.button(text="🌟 Паки знаменитостей", callback_data="celebrity_packs")
+    kb.button(text="📦 Прочие паки", callback_data="other_packs")
     kb.button(text="◀️ Назад в магазин", callback_data="shop_main")
     kb.adjust(1)
-    
-    text = "📦 <b>Паки</b>\n\nВыберите пак для предпросмотра:"
-    
-    try:
-        await callback.message.edit_text(text, reply_markup=kb.as_markup())
-        await callback.answer()
-    except TelegramBadRequest:
-        await callback.answer()
+
+    text = "📦 <b>Раздел Паков</b>\n\nВыберите категорию:"
+
+    if callback.message.photo or getattr(callback.message, 'video', None) or getattr(callback.message, 'document', None):
+        try: await callback.message.delete()
+        except: pass
+        await callback.message.answer(text, reply_markup=kb.as_markup())
+    else:
+        try:
+            await callback.message.edit_text(text, reply_markup=kb.as_markup())
+        except TelegramBadRequest:
+            await callback.message.answer(text, reply_markup=kb.as_markup())
+
+    await callback.answer()
+
+
+@router.callback_query(F.data == "celebrity_packs")
+async def celebrity_packs_menu(callback: CallbackQuery):
+    kb = InlineKeyboardBuilder()
+    for pid, pack in PACKSZVEZDA.items():
+        kb.button(
+            text=f"📦 {pack['name']} — {pack['price']} ⭐️", 
+            callback_data=f"pack_preview_{pid}"
+        )
+    kb.button(text="◀️ Назад", callback_data="cat_packs")
+    kb.adjust(1)
+
+    await callback.message.edit_text("🌟 <b>Паки знаменитостей</b>\n\nВыберите пак:", reply_markup=kb.as_markup())
+
+
+@router.callback_query(F.data == "other_packs")
+async def other_packs_menu(callback: CallbackQuery):
+    kb = InlineKeyboardBuilder()
+    for pid, pack in PROCHIEPAKI.items():
+        kb.button(
+            text=f"📦 {pack['name']} — {pack['price']} ⭐️", 
+            callback_data=f"pack_preview_{pid}"
+        )
+    kb.button(text="◀️ Назад", callback_data="cat_packs")
+    kb.adjust(1)
+
+    await callback.message.edit_text("📦 <b>Прочие паки</b>\n\nВыберите пак:", reply_markup=kb.as_markup())
 
 @router.callback_query(F.data.startswith("pack_preview_"))
 async def pack_preview(callback: CallbackQuery):
     try:
         pack_id = int(callback.data.split("_")[-1])
-        pack = PACKS.get(pack_id)
+        
+        # Ищем пак в двух словарях
+        pack = PACKSZVEZDA.get(pack_id) or PROCHIEPAKI.get(pack_id)
+        
         if not pack:
             return await callback.answer("❌ Пак не найден", show_alert=True)
 
@@ -1686,6 +1954,7 @@ async def pack_preview(callback: CallbackQuery):
 📦 <b>{pack['name']}</b>
 💰 Цена: <b>{pack['price']} ⭐</b>
 
+Нажмите кнопку ниже для покупки.
 После оплаты сразу получишь ссылку на Mega.nz
         """.strip()
 
@@ -1710,355 +1979,349 @@ async def pack_preview(callback: CallbackQuery):
         await callback.answer(f"Ошибка: {str(e)[:80]}", show_alert=True)
 
 @router.callback_query(F.data.startswith("buy_mega_pack_"))
-async def buy_mega_pack(callback: CallbackQuery, bot: Bot):
+async def buy_mega_pack(callback: CallbackQuery):
     pack_id = int(callback.data.split("_")[-1])
-    pack = PACKS.get(pack_id)
+    pack = PACKSZVEZDA.get(pack_id) or PROCHIEPAKI.get(pack_id)
+    
     if not pack:
         return await callback.answer("❌ Пак не найден", show_alert=True)
-
-    await bot.send_invoice(
-        chat_id=callback.from_user.id,
-        title=pack["name"],
-        description=f"Полный пак • {pack['price']} Stars",
-        payload=f"mega_pack_{pack_id}",
-        currency="XTR",
-        prices=[LabeledPrice(label=pack["name"], amount=pack["price"])]
+    
+    payment_link = await generate_payment_link(
+        callback.from_user.id,
+        "mega_pack",
+        pack
     )
-    await callback.answer("⏳ Переход к оплате...")
-
-# ========================= АДМИНСКИЕ ПАКИ (ПОЛЬЗОВАТЕЛЬСКИЕ) =========================
-
-@router.callback_query(F.data.startswith("view_admin_pack_"))
-async def view_admin_pack(callback: CallbackQuery):
-    pack_id = int(callback.data.split("_")[-1])
-    
-    async with db.execute("SELECT name, description, price, photo_path FROM admin_packs WHERE id = ?", (pack_id,)) as cur:
-        pack = await cur.fetchone()
-    
-    if not pack:
-        return await callback.answer("Пак не найден!", show_alert=True)
-    
-    name, desc, price, photo_path = pack
     
     kb = InlineKeyboardBuilder()
-    kb.button(text=f"💰 Купить за {price} ⭐️", callback_data=f"buy_admin_pack_{pack_id}")
-    kb.button(text="◀️ Назад к пакам", callback_data="cat_packs")
+    kb.button(text="💳 Перейти к оплате", url=payment_link)
+    kb.button(text="◀️ Назад", callback_data="cat_packs")
     kb.adjust(1)
     
-    try:
-        if Path(photo_path).exists():
-            await callback.message.answer_photo(
-                photo=FSInputFile(photo_path),
-                caption=f"📦 <b>{name}</b>\n\n📄 {desc}\n\n💎 Цена: <b>{price} ⭐️</b>",
-                reply_markup=kb.as_markup()
-            )
-        else:
-            await callback.message.answer(
-                f"📦 <b>{name}</b>\n\n📄 {desc}\n\n💎 Цена: <b>{price} ⭐️</b>",
-                reply_markup=kb.as_markup()
-            )
-        await callback.message.delete()
-    except Exception as e:
-        logging.error(f"Ошибка отображения админ-пака: {e}")
-        await callback.answer("❌ Ошибка отображения пака.", show_alert=True)
+    await callback.message.edit_text(
+        f"📦 <b>{pack['name']}</b>\n\n"
+        f"💰 Сумма: {pack['price']} ⭐️\n\n"
+        f"⚠️ Оплата через отдельного бота.\n"
+        f"Нажмите кнопку ниже:",
+        reply_markup=kb.as_markup()
+    )
+    await callback.answer()
 
-@router.callback_query(F.data.startswith("buy_admin_pack_"))
-async def buy_admin_pack(callback: CallbackQuery):
-    pack_id = int(callback.data.split("_")[-1])
+# ========================= КАЗИНО =========================
+
+@router.callback_query(F.data == "casino_menu")
+async def casino_main(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    udata = await get_user_data(user_id)
     
-    async with db.execute("SELECT name, description, price FROM admin_packs WHERE id = ?", (pack_id,)) as cur:
-        pack = await cur.fetchone()
-    
-    if not pack:
-        return await callback.answer("Пак не найден!", show_alert=True)
-    
-    name, desc, price = pack
-    
-    try:
-        await callback.message.answer_invoice(
-            title=f"Пак: {name}",
-            description=desc[:255],
-            payload=f"admin_pack_{pack_id}",
-            currency="XTR",
-            prices=[LabeledPrice(label=f"Пак {name}", amount=price)]
+    # Ограничение по балансу
+    if udata["diamonds"] > 300:
+        return await callback.answer(
+            "❌ В казино можно играть только при балансе до 300 алмазов!", 
+            show_alert=True
         )
-        await callback.answer()
-    except Exception as e:
-        logging.error(f"Ошибка создания инвойса для админ-пака: {e}")
-        await callback.answer("❌ Ошибка создания счета.", show_alert=True)
+    
+    # Проверка дневного лимита
+    daily_won = await check_and_reset_daily_win(user_id)
+    if daily_won >= 100:
+        return await callback.answer(
+            "❌ Вы уже выиграли 100 алмазов сегодня. Лимит исчерпан!", 
+            show_alert=True
+        )
+    
+    text = (
+        "🎮 <b>Казино</b>\n\n"
+        f"💰 Баланс: <b>{udata['diamonds']}</b> 💎\n\n"
+        "Выбери игру:\n\n"
+        "🎲 Кости — Выпадет 4,5,6 — x2\n"
+        "⚽️ Футбол — Гол — x1.5\n"
+        "🎯 Дартс — В центр — x3\n"
+        "🏀 Баскетбол — Попал — x1.5\n"
+        "🎰 Слоты — Три одинак. — x5\n"
+        "🎳 Боулинг — Страйк — x2"
+    )
+    
+    await callback.message.edit_text(text, reply_markup=casino_menu())
 
-# ========================= УПРАВЛЕНИЕ АДМИН-ПАКАМИ =========================
 
-@router.callback_query(F.data == "admin_packs_menu")
-async def admin_packs_menu(callback: CallbackQuery):
-    if callback.from_user.id not in ADMIN_IDS: return
+@router.callback_query(F.data.startswith("game_"))
+async def choose_bet(callback: CallbackQuery, state: FSMContext):
+    game_type = callback.data
+    await state.update_data(game=game_type)
     
-    async with db.execute("SELECT id, name, price FROM admin_packs ORDER BY id DESC") as cur:
-        packs = await cur.fetchall()
+    names = {
+        "game_dice": "🎲 Кости",
+        "game_football": "⚽️ Футбол",
+        "game_darts": "🎯 Дартс",
+        "game_basket": "🏀 Баскетбол",
+        "game_slots": "🎰 Слоты",
+        "game_bowling": "🎳 Боулинг"
+    }
     
-    text = "📦 <b>Управление Админ-Паками</b>\n\n"
-    kb = InlineKeyboardBuilder()
+    await callback.message.edit_text(
+        f"🎮 <b>{names.get(game_type, 'Игра')}</b>\n\nВыберите ставку:",
+        reply_markup=bet_keyboard(game_type)
+    )
+
+
+@router.callback_query(F.data.startswith("bet_"))
+async def process_bet(callback: CallbackQuery, state: FSMContext, bot: Bot):
+    parts = callback.data.split("_")
+    bet = int(parts[-1])
+    game_callback = "_".join(parts[1:-1])
     
-    if packs:
-        text += "Существующие паки:\n"
-        for pack_id, name, price in packs:
-            text += f"• {name} — {price} ⭐️\n"
-            kb.button(text=f"❌ Удалить {name}", callback_data=f"del_admin_pack_{pack_id}")
+    user_id = callback.from_user.id
+    udata = await get_user_data(user_id)
+    
+    if udata["diamonds"] < bet:
+        return await callback.answer("❌ Недостаточно алмазов!", show_alert=True)
+    
+    await db.execute("UPDATE users SET diamonds = diamonds - ? WHERE user_id = ?", (bet, user_id))
+    await db.commit()
+    
+    await state.update_data(bet=bet, game=game_callback)
+    
+    await play_animated_game(callback, bot, state, game_callback, bet)
+
+
+async def play_animated_game(callback: CallbackQuery, bot: Bot, state: FSMContext, game_type: str, bet: int):
+    emoji_map = {
+        "game_dice": "🎲", "game_football": "⚽", "game_darts": "🎯",
+        "game_basket": "🏀", "game_slots": "🎰", "game_bowling": "🎳"
+    }
+    emoji = emoji_map.get(game_type, "🎲")
+    
+    # Проверяем дневной лимит
+    daily_won = await check_and_reset_daily_win(callback.from_user.id)
+    if daily_won >= 100:
+        return await callback.answer("❌ Дневной лимит выигрыша в казино исчерпан (100 💎)", show_alert=True)
+    
+    # Отправляем анимацию
+    dice_msg = await bot.send_dice(chat_id=callback.from_user.id, emoji=emoji)
+    await asyncio.sleep(2.8)
+    
+    value = dice_msg.dice.value
+    
+    # Логика выигрыша
+    if game_type == "game_slots":
+        win = value in (1, 6)   # более точная проверка для слотов
+        multiplier = 5.0
     else:
-        text += "Паков пока нет.\n"
+        rules = {
+            "game_dice": (4, 2.0),
+            "game_football": (4, 1.5),
+            "game_darts": (6, 3.0),
+            "game_basket": (4, 1.5),
+            "game_bowling": (5, 2.0)
+        }
+        threshold, multiplier = rules.get(game_type, (4, 2.0))
+        win = value >= threshold
+
+    win_amount = int(bet * multiplier) if win else 0
     
-    kb.button(text="➕ Создать Пак", callback_data="create_admin_pack_start")
-    kb.button(text="◀️ Назад в Админку", callback_data="admin_enter")
+    # Проверяем, не превысит ли выигрыш дневной лимит
+    if win and daily_won + win_amount > 100:
+        win_amount = int(100 - daily_won)
+        if win_amount <= 0:
+            win_amount = 0
+            win = False
+
+    if win and win_amount > 0:
+        await add_diamonds(callback.from_user.id, win_amount)
+        await add_daily_win(callback.from_user.id, win_amount)
+        result = f"🎉 <b>ВЫИГРЫШ!</b>\n\nВы выиграли <b>{win_amount} 💎</b> (x{multiplier})"
+    else:
+        result = "😔 <b>Проигрыш</b>\nСтавка сгорела."
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🎮 Играть ещё", callback_data="casino_menu")
+    kb.button(text="◀️ В меню", callback_data="back_main")
     kb.adjust(1)
     
-    await callback.message.edit_text(text, reply_markup=kb.as_markup())
-
-@router.callback_query(F.data == "create_admin_pack_start")
-async def create_admin_pack_start(callback: CallbackQuery, state: FSMContext):
-    if callback.from_user.id not in ADMIN_IDS: return
-    await callback.message.edit_text("📸 <b>Шаг 1/5:</b> Отправьте фото-обложку для пака:")
-    await state.set_state(AdminStates.pack_name)
-    await state.update_data(pack_step="photo")
-
-@router.message(AdminStates.pack_name, F.photo)
-async def process_admin_pack_photo(message: Message, state: FSMContext):
-    if message.from_user.id not in ADMIN_IDS: return
+    await bot.send_message(
+        chat_id=callback.from_user.id,
+        text=f"{result}\n\n💰 Текущий баланс: <b>{(await get_user_data(callback.from_user.id))['diamonds']}</b> 💎",
+        reply_markup=kb.as_markup()
+    )
     
-    photo = message.photo[-1]
-    file = await message.bot.get_file(photo.file_id)
-    photo_path = PACKS_DIR / f"admin_pack_{uuid.uuid4().hex[:8]}.jpg"
-    await message.bot.download_file(file.file_path, destination=photo_path)
-    
-    await state.update_data(pack_photo=str(photo_path))
-    await message.answer("📝 <b>Шаг 2/5:</b> Введите название пака:")
-    await state.set_state(AdminStates.pack_description)
-
-@router.message(AdminStates.pack_name)
-async def process_admin_pack_name_invalid(message: Message):
-    await message.answer("❌ Пожалуйста, отправьте именно фото (изображение)!")
-
-@router.message(AdminStates.pack_description)
-async def process_admin_pack_name(message: Message, state: FSMContext):
-    if message.from_user.id not in ADMIN_IDS: return
-    name = message.text.strip()
-    if len(name) > 100:
-        return await message.answer("❌ Название слишком длинное (макс 100 символов)!")
-    
-    await state.update_data(pack_name=name)
-    await message.answer("📄 <b>Шаг 3/5:</b> Введите описание пака:")
-    await state.set_state(AdminStates.pack_price)
-
-@router.message(AdminStates.pack_price)
-async def process_admin_pack_description(message: Message, state: FSMContext):
-    if message.from_user.id not in ADMIN_IDS: return
-    desc = message.text.strip()
-    if len(desc) > 500:
-        return await message.answer("❌ Описание слишком длинное (макс 500 символов)!")
-    
-    await state.update_data(pack_description=desc)
-    await message.answer("💎 <b>Шаг 4/5:</b> Введите цену пака в Звездах (целое число):")
-    await state.set_state(AdminStates.pack_file)
-
-@router.message(AdminStates.pack_file)
-async def process_admin_pack_price(message: Message, state: FSMContext):
-    if message.from_user.id not in ADMIN_IDS: return
-    text = message.text.strip()
-    if not text.isdigit() or int(text) <= 0:
-        return await message.answer("❌ Цена должна быть положительным целым числом!")
-    
-    await state.update_data(pack_price=int(text))
-    await message.answer("📁 <b>Шаг 5/5:</b> Отправьте файл, который будут получать покупатели:")
-    await state.set_state(AdminStates.pack_name)
-    await state.update_data(pack_step="file")
-
-@router.message(AdminStates.pack_name, F.document | F.video | F.photo | F.audio | F.voice | F.video_note | F.animation | F.sticker)
-async def process_admin_pack_file(message: Message, state: FSMContext):
-    if message.from_user.id not in ADMIN_IDS: return
-    
-    data = await state.get_data()
     await state.clear()
-    
-    if message.document:
-        file_id = message.document.file_id
-        file_name = message.document.file_name or f"file_{uuid.uuid4().hex[:8]}"
-        file = await message.bot.get_file(file_id)
-    elif message.video:
-        file_id = message.video.file_id
-        file_name = f"video_{uuid.uuid4().hex[:8]}.mp4"
-        file = await message.bot.get_file(file_id)
-    elif message.photo:
-        file_id = message.photo[-1].file_id
-        file_name = f"photo_{uuid.uuid4().hex[:8]}.jpg"
-        file = await message.bot.get_file(file_id)
-    elif message.audio:
-        file_id = message.audio.file_id
-        file_name = message.audio.file_name or f"audio_{uuid.uuid4().hex[:8]}.mp3"
-        file = await message.bot.get_file(file_id)
-    elif message.voice:
-        file_id = message.voice.file_id
-        file_name = f"voice_{uuid.uuid4().hex[:8]}.ogg"
-        file = await message.bot.get_file(file_id)
-    elif message.video_note:
-        file_id = message.video_note.file_id
-        file_name = f"videonote_{uuid.uuid4().hex[:8]}.mp4"
-        file = await message.bot.get_file(file_id)
-    elif message.animation:
-        file_id = message.animation.file_id
-        file_name = message.animation.file_name or f"gif_{uuid.uuid4().hex[:8]}.gif"
-        file = await message.bot.get_file(file_id)
-    elif message.sticker:
-        file_id = message.sticker.file_id
-        file_name = f"sticker_{uuid.uuid4().hex[:8]}.webp"
-        file = await message.bot.get_file(file_id)
-    else:
-        return await message.answer("❌ Неподдерживаемый тип файла!")
-    
-    file_path = PACKS_DIR / file_name
-    await message.bot.download_file(file.file_path, destination=file_path)
-    
-    await db.execute(
-        "INSERT INTO admin_packs (name, description, price, photo_path, file_path, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-        (data['pack_name'], data['pack_description'], data['pack_price'], data['pack_photo'], str(file_path), datetime.now().isoformat())
-    )
-    await db.commit()
-    
-    await message.answer(
-        f"✅ <b>Пак успешно создан!</b>\n\n"
-        f"📦 Название: {data['pack_name']}\n"
-        f"💎 Цена: {data['pack_price']} ⭐️\n"
-        f"📄 Описание: {data['pack_description']}",
-        reply_markup=admin_menu()
-    )
 
-@router.callback_query(F.data.startswith("del_admin_pack_"))
-async def delete_admin_pack(callback: CallbackQuery):
-    if callback.from_user.id not in ADMIN_IDS: return
-    pack_id = int(callback.data.split("_")[-1])
+async def check_and_reset_daily_win(user_id: int):
+    """Проверяет и сбрасывает дневной лимит выигрыша"""
+    today = datetime.now().date().isoformat()
     
-    async with db.execute("SELECT photo_path, file_path FROM admin_packs WHERE id = ?", (pack_id,)) as cur:
-        pack = await cur.fetchone()
+    async with db.execute(
+        "SELECT daily_won, daily_reset_date FROM users WHERE user_id = ?", 
+        (user_id,)
+    ) as cur:
+        row = await cur.fetchone()
     
-    if pack:
-        for path in [pack[0], pack[1]]:
-            if path and Path(path).exists():
-                try:
-                    Path(path).unlink()
-                except Exception:
-                    pass
+    if not row:
+        return 0.0
     
-    await db.execute("DELETE FROM admin_packs WHERE id = ?", (pack_id,))
+    daily_won, reset_date = row
+    if reset_date != today:
+        await db.execute(
+            "UPDATE users SET daily_won = 0, daily_reset_date = ? WHERE user_id = ?",
+            (today, user_id)
+        )
+        await db.commit()
+        return 0.0
+    return float(daily_won or 0)
+
+
+async def add_daily_win(user_id: int, amount: float):
+    """Добавляет выигранные алмазы в дневной лимит"""
+    await db.execute(
+        "UPDATE users SET daily_won = daily_won + ? WHERE user_id = ?",
+        (amount, user_id)
+    )
     await db.commit()
-    
-    await callback.answer("✅ Пак удален!", show_alert=True)
-    await admin_packs_menu(callback)
 
 # ========================= ГЛАВНЫЙ ЗАПУСК =========================
 
 async def main():
     await init_db()
-    
     asyncio.create_task(delete_old_videos())
-    
-    print("🚀 Запуск пула мультиботов...")
 
-    dp = Dispatcher()
-    dp.message.outer_middleware(BanMiddleware())
-    dp.callback_query.outer_middleware(BanMiddleware())
-    dp.message.outer_middleware(MaintenanceMiddleware())
-    dp.callback_query.outer_middleware(MaintenanceMiddleware())
-    dp.include_router(router)
+    print("🚀 Запуск ботов...")
 
-    @dp.pre_checkout_query()
-    async def pre_checkout_query_handler(query: PreCheckoutQuery):
-        await query.answer(ok=True)
+    GLOBAL_BOTS_POOL.clear()
 
-    @dp.message(F.successful_payment)
-    async def payment_success_handler(message: Message):
-        payload = message.successful_payment.invoice_payload
-        
-        # === ПОКУПКА АЛМАЗОВ ===
-        if payload.startswith("buy_diamonds:"):
-            diamonds = int(payload.split(":")[1])
-            if await is_event_active("global_x3_stars_until"):
-                diamonds *= 3
-            await add_diamonds(message.from_user.id, float(diamonds))
-            x3_msg = " [⚡️ Сработал Ивент Х3!]" if await is_event_active("global_x3_stars_until") else ""
-            await message.answer(f"🎉 <b>Оплата зачислена!</b> +<b>{diamonds}</b> 💎.{x3_msg}")
+    aux_message = (
+        "<b>👋 Добро пожаловать!</b>\n\n"
+        "<b>У нас новый бот: @ZemlyanichkinBot</b>\n\n"
+        "<b>⭐️ Переходи и наслаждайся контентом!</b>"
+    )
 
-        # === СПОСОБНОСТИ ЗА ЗВЕЗДЫ ===
-        elif payload == "ability_x2":
-            await db.execute("UPDATE users SET x2_until = ? WHERE user_id = ?", ((datetime.now() + timedelta(hours=24)).isoformat(), message.from_user.id))
-            await db.commit()
-            await message.answer("🚀 <b>Буст х2 Рефералы активирован на 24 часа!</b>")
+    tasks = []
 
-        elif payload == "ability_keep_videos":
-            await db.execute("UPDATE users SET keep_videos = 1 WHERE user_id = ?", (message.from_user.id,))
-            await db.commit()
-            await message.answer("♾ <b>Видео теперь сохраняются навсегда!</b>")
-
-        # === ПОКУПКА MEGA-ПАКОВ ===
-        elif payload.startswith("mega_pack_"):
-            try:
-                pack_id = int(payload.split("_")[-1])
-                pack = PACKS.get(pack_id)
-                if pack:
-                    await message.answer(
-                        f"🎉 <b>{pack['name']} успешно оплачен!</b>\n\n"
-                        f"🔗 <b>Ссылка на полный пак:</b>\n"
-                        f"{pack['mega_link']}\n\n"
-                        f"💾 Сохраните ссылку — она постоянная.",
-                        disable_web_page_preview=True,
-                        reply_markup=await main_menu(message.from_user.id)
-                    )
-                else:
-                    await message.answer("✅ Оплата прошла успешно!")
-            except Exception:
-                await message.answer("✅ Оплата прошла успешно!")
-
-        # === ПОКУПКА АДМИН-ПАКОВ ===
-        elif payload.startswith("admin_pack_"):
-            try:
-                pack_id = int(payload.split("_")[-1])
-                async with db.execute("SELECT name, file_path FROM admin_packs WHERE id = ?", (pack_id,)) as cur:
-                    pack = await cur.fetchone()
-                
-                if pack:
-                    name, file_path = pack
-                    try:
-                        await message.answer_document(
-                            document=FSInputFile(file_path),
-                            caption=f"🎁 <b>Спасибо за покупку пака «{name}»!</b>\n\nНаслаждайтесь контентом!"
-                        )
-                    except Exception as e:
-                        logging.error(f"Ошибка отправки файла админ-пака: {e}")
-                        await message.answer("❌ Ошибка при отправке файла. Свяжитесь с администратором.")
-                else:
-                    await message.answer("✅ Оплата прошла успешно!")
-            except Exception:
-                await message.answer("✅ Оплата прошла успешно!")
-
-    for token in MAIN_TOKENS:
-        try:
-            print(f"📱 Запускаю бота с токеном: {token[:10]}...")
-            bot_instance = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-            await bot_instance.delete_webhook(drop_pending_updates=True)
-            GLOBAL_BOTS_POOL.append(bot_instance)
-            print(f"✅ Бот [{token.split(':')[0]}] добавлен в пул.")
-        except Exception as e:
-            print(f"❌ Ошибка запуска бота с токеном {token.split(':')[0]}: {e}")
-            import traceback
-            traceback.print_exc()
-
-    print(f"🤖 Все боты активны. Всего ботов: {len(GLOBAL_BOTS_POOL)}")
-
-    await dp.start_polling(*GLOBAL_BOTS_POOL, allowed_updates=dp.resolve_used_update_types())
-
-if __name__ == "__main__":
+    # ===== ГЛАВНЫЙ БОТ =====
     try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        print("🛑 Бот остановлен.")
+        main_bot = Bot(token=MAIN_BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+        await main_bot.delete_webhook(drop_pending_updates=True)
+        GLOBAL_BOTS_POOL.append(main_bot)  # для рассылок
+
+        dp_main = Dispatcher()
+        dp_main.message.outer_middleware(BanMiddleware())
+        dp_main.callback_query.outer_middleware(BanMiddleware())
+        dp_main.message.outer_middleware(MaintenanceMiddleware())
+        dp_main.callback_query.outer_middleware(MaintenanceMiddleware())
+        dp_main.include_router(router)
+
+        # Обработчики платежей (для оставшихся прямых покупок: кастомные алмазы, премиум за алмазы)
+        @dp_main.pre_checkout_query()
+        async def pre_checkout(query: PreCheckoutQuery):
+            await query.answer(ok=True)
+
+        @dp_main.message(F.successful_payment)
+        async def payment_handler(message: Message):
+            payload = message.successful_payment.invoice_payload
+            if payload.startswith("buy_diamonds:"):
+                diamonds = int(payload.split(":")[1])
+                if await is_event_active("global_x3_stars_until"):
+                    diamonds *= 3
+                await add_diamonds(message.from_user.id, float(diamonds))
+                x3_msg = " [⚡️ Х3 Ивент!]" if await is_event_active("global_x3_stars_until") else ""
+                await message.answer(f"🎉 <b>Оплата прошла!</b> +{diamonds} 💎{x3_msg}")
+            elif payload == "ability_x2":
+                await db.execute("UPDATE users SET x2_until = ? WHERE user_id = ?", 
+                                ((datetime.now() + timedelta(hours=24)).isoformat(), message.from_user.id))
+                await db.commit()
+                await message.answer("🚀 Буст х2 рефералы активирован на 24ч!")
+            elif payload == "ability_keep_videos":
+                await db.execute("UPDATE users SET keep_videos = 1 WHERE user_id = ?", (message.from_user.id,))
+                await db.commit()
+                await message.answer("♾ Видео теперь навсегда!")
+            elif payload.startswith("mega_pack_"):
+                try:
+                    pack_id = int(payload.split("_")[-1])
+                    pack = PACKSZVEZDA.get(pack_id) or PROCHIEPAKI.get(pack_id)
+                    if pack:
+                        await message.answer(f"🎉 {pack['name']} оплачен!\n🔗 {pack['mega_link']}", 
+                                           disable_web_page_preview=True)
+                except:
+                    await message.answer("✅ Оплата успешна!")
+
+        tasks.append(asyncio.create_task(dp_main.start_polling(
+            main_bot, 
+            allowed_updates=dp_main.resolve_used_update_types()
+        )))
+        print("✅ Главный бот запущен")
     except Exception as e:
-        print(f"❌ Критическая ошибка: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"❌ Ошибка главного бота: {e}")
+
+    # ===== БОТ ДЛЯ ОПЛАТЫ =====
+    try:
+        payment_bot = Bot(token=PAYMENT_BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+        await payment_bot.delete_webhook(drop_pending_updates=True)
+        
+        dp_payment = Dispatcher()
+
+        @dp_payment.message(Command("start"))
+        async def payment_bot_start(message: Message):
+            user_id = message.from_user.id
+            args = message.text.split()
+            
+            if len(args) > 1 and args[1].startswith("pay_"):
+                payment_id = args[1]
+                if payment_id in pending_payments:
+                    payment_data = pending_payments[payment_id]
+                    if payment_data['user_id'] == user_id:
+                        # Здесь должна быть реальная оплата, сейчас просто имитируем успех
+                        await process_payment(user_id, payment_data, main_bot)
+                        del pending_payments[payment_id]
+                        await message.answer(
+                            "✅ <b>Оплата успешно обработана!</b>\n\n"
+                            "Возвращайтесь в главного бота: @ZemlyanichkinBot",
+                            reply_markup=InlineKeyboardBuilder()
+                                .button(text="🔙 Вернуться в главного бота", url="https://t.me/ZemlyanichkinBot")
+                                .as_markup()
+                        )
+                    else:
+                        await message.answer("❌ Эта ссылка оплаты принадлежит другому пользователю!")
+                else:
+                    await message.answer("❌ Ссылка оплаты недействительна или устарела.")
+            else:
+                await message.answer(
+                    "💳 <b>Бот для оплаты</b>\n\n"
+                    "Используйте ссылку из главного бота для оплаты товаров.",
+                    reply_markup=InlineKeyboardBuilder()
+                        .button(text="🔙 Вернуться в главного бота", url="https://t.me/ZemlyanichkinBot")
+                        .as_markup()
+                )
+
+        tasks.append(asyncio.create_task(dp_payment.start_polling(
+            payment_bot, 
+            allowed_updates=["message"]
+        )))
+        print("✅ Бот для оплаты запущен")
+    except Exception as e:
+        print(f"❌ Ошибка бота оплаты: {e}")
+
+    # ===== ВСПОМОГАТЕЛЬНЫЕ БОТЫ =====
+    for token in AUX_TOKENS:
+        try:
+            aux_bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+            await aux_bot.delete_webhook(drop_pending_updates=True)
+            
+            dp_aux = Dispatcher()
+
+            @dp_aux.message(Command("start"))
+            async def aux_start(message: Message):
+                await message.answer(aux_message, disable_web_page_preview=True)
+
+            tasks.append(asyncio.create_task(dp_aux.start_polling(
+                aux_bot, 
+                allowed_updates=["message"]
+            )))
+            print(f"✅ Вспомогательный бот запущен")
+        except Exception as e:
+            print(f"❌ Ошибка вспомогательного бота: {e}")
+
+    print(f"\n🎯 Всего запущено ботов: {len(tasks)}")
+
+    if not tasks:
+        print("❌ Ни один бот не запустился")
+        return
+
+    await asyncio.gather(*tasks)
