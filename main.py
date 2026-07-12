@@ -889,7 +889,7 @@ async def watch(callback: CallbackQuery, bot: Bot):
         await add_diamonds(user_id, 2.0)
         cap += " (🍀 Счастливый час: +2 💎 за просмотр!)"
 
-  msg = await bot.send_video(
+ msg = await bot.send_video(
         chat_id=user_id,
         video=FSInputFile(random.choice(videos)),
         caption=cap,
