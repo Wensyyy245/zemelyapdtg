@@ -25,7 +25,7 @@ logging.basicConfig(level=logging.INFO)
 asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
 # ========================= НАСТРОЙКИ =========================
 
-MAIN_BOT_TOKEN = "8947662649:AAG2pNHL_BF70Q7sOarL0axw20f4Jo1HKCU"          # ваш основной бот
+MAIN_BOT_TOKEN = "8827652589:AAHyzLgyfWdw7SKy-rNd5IeMi-4MEcCDPck"          # ваш основной бот
 PAYMENT_BOT_TOKEN = "8611620522:AAHwdkqnaCIJPPY-pNVgtV63xarI9vrzidY"      # бот для оплаты
 AUX_TOKENS = [
     "8749652033:AAGxEa4xA2BU9wEUUcntIH3MfEoRVBniiwQ",
