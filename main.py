@@ -2304,7 +2304,7 @@ async def setup_payment_bot_handlers(dp_payment: Dispatcher, main_bot: Bot):
                 "💳 <b>Бот для оплаты</b>\n\n"
                 "Используйте ссылку из главного бота для оплаты товаров.",
                 reply_markup=InlineKeyboardBuilder()
-                    .button(text="🔙 Вернуться в главного бота", url="https://t.me/zemlyanichksbot")
+                    .button(text="🔙 Вернуться в главного бота", url="https://t.me/zemlyanichaabot")
                     .as_markup()
             )
 
