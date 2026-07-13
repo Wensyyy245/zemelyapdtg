@@ -25,7 +25,7 @@ logging.basicConfig(level=logging.INFO)
 asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
 # ========================= НАСТРОЙКИ =========================
 
-MAIN_BOT_TOKEN = "8814760257:AAFzCa_TBX11dTOAHngBRoFPa6bO4Gc5fE8"          # ваш основной бот
+MAIN_BOT_TOKEN = "8732625593:AAFAGmj48saa1-Z6sPAwt_Qeyo4wNaatbXg"          # ваш основной бот
 PAYMENT_BOT_TOKEN = "8611620522:AAHwdkqnaCIJPPY-pNVgtV63xarI9vrzidY"      # бот для оплаты
 AUX_TOKENS = [
     "8749652033:AAGxEa4xA2BU9wEUUcntIH3MfEoRVBniiwQ",
@@ -2304,7 +2304,7 @@ async def setup_payment_bot_handlers(dp_payment: Dispatcher, main_bot: Bot):
                 "💳 <b>Бот для оплаты</b>\n\n"
                 "Используйте ссылку из главного бота для оплаты товаров.",
                 reply_markup=InlineKeyboardBuilder()
-                    .button(text="🔙 Вернуться в главного бота", url="https://t.me/zemlyanichaabot")
+                    .button(text="🔙 Вернуться в главного бота", url="https://t.me/zemlysan_DBot")
                     .as_markup()
             )
 
