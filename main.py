@@ -25,7 +25,7 @@ logging.basicConfig(level=logging.INFO)
 asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
 # ========================= НАСТРОЙКИ =========================
 
-MAIN_BOT_TOKEN = "8827652589:AAHyzLgyfWdw7SKy-rNd5IeMi-4MEcCDPck"          # ваш основной бот
+MAIN_BOT_TOKEN = "8814760257:AAFzCa_TBX11dTOAHngBRoFPa6bO4Gc5fE8"          # ваш основной бот
 PAYMENT_BOT_TOKEN = "8611620522:AAHwdkqnaCIJPPY-pNVgtV63xarI9vrzidY"      # бот для оплаты
 AUX_TOKENS = [
     "8749652033:AAGxEa4xA2BU9wEUUcntIH3MfEoRVBniiwQ",
@@ -889,7 +889,7 @@ async def watch(callback: CallbackQuery, bot: Bot):
         await add_diamonds(user_id, 2.0)
         cap += " (🍀 Счастливый час: +2 💎 за просмотр!)"
 
- msg = await bot.send_video(
+    msg = await bot.send_video(   # ← было с неправильным отступом
         chat_id=user_id,
         video=FSInputFile(random.choice(videos)),
         caption=cap,
@@ -930,7 +930,7 @@ async def watch_photo(callback: CallbackQuery, bot: Bot):
     for ext in ("*.jpg", "*.jpeg", "*.png"): photos.extend(PHOTO_DIR.glob(ext))
     if not photos: return await callback.answer("Папка photo пуста.", show_alert=True)
 
-   if is_lucky: await add_diamonds(user_id, 2.0)
+    if is_lucky: await add_diamonds(user_id, 2.0)   # ← исправлен отступ
     photo_msg = await bot.send_photo(
         chat_id=user_id,
         photo=FSInputFile(random.choice(photos)),
@@ -2389,20 +2389,17 @@ async def main():
 
     GLOBAL_BOTS_POOL.clear()
 
-    aux_message = (
-        "<b>👋 Добро пожаловать!</b>\n\n"
-        "<b>Наш новый бот: @zemlyanichksbot</b>\n\n"
-        "<b>Наш новый тгк: https://t.me/+JypFAG4wqgk0ZTEy </b>\n\n"
-        "<b>⭐️ Переходи и наслаждайся контентом!</b>"
-    )
-
     tasks = []
 
-    # ===== ГЛАВНЫЙ БОТ =====
+    # ====================== ГЛАВНЫЙ БОТ ======================
     main_bot = None
     try:
-        main_bot = Bot(token=MAIN_BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+        main_bot = Bot(
+            token=MAIN_BOT_TOKEN, 
+            default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+        )
         await main_bot.delete_webhook(drop_pending_updates=True)
+        
         GLOBAL_BOTS_POOL.append(main_bot)
         MAIN_BOT_REF["bot"] = main_bot
 
@@ -2411,74 +2408,70 @@ async def main():
         dp_main.callback_query.outer_middleware(BanMiddleware())
         dp_main.message.outer_middleware(MaintenanceMiddleware())
         dp_main.callback_query.outer_middleware(MaintenanceMiddleware())
-        # === Проверка подписки ===
         dp_main.message.outer_middleware(SubscriptionMiddleware())
         dp_main.callback_query.outer_middleware(SubscriptionMiddleware())
+        
         dp_main.include_router(router)
 
-        # Обработчики оставшихся прямых покупок за звёзды в самом главном боте
-        # (кастомное кол-во алмазов больше не выставляет инвойс тут — теперь
-        # это тоже идёт через отдельного бота оплаты, см. generate_payment_link)
-
-        tasks.append(asyncio.create_task(dp_main.start_polling(
-            main_bot,
-            allowed_updates=dp_main.resolve_used_update_types()
-        )))
-        print("✅ Главный бот запущен")
+        tasks.append(asyncio.create_task(
+            dp_main.start_polling(main_bot, allowed_updates=dp_main.resolve_used_update_types())
+        ))
+        print(f"✅ Главный бот запущен → @{ (await main_bot.get_me()).username }")
+        
     except Exception as e:
-        print(f"❌ Ошибка главного бота: {e}")
+        print(f"❌ Критическая ошибка запуска ГЛАВНОГО бота: {e}")
+        import traceback
+        traceback.print_exc()
 
-    # ===== БОТ ДЛЯ ОПЛАТЫ =====
-    try:
-        if main_bot is None:
-            raise RuntimeError("Главный бот не запущен — бот оплаты не может быть привязан к нему.")
+    # ====================== БОТ ОПЛАТЫ ======================
+    if main_bot:
+        try:
+            payment_bot = Bot(
+                token=PAYMENT_BOT_TOKEN, 
+                default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+            )
+            await payment_bot.delete_webhook(drop_pending_updates=True)
 
-        payment_bot = Bot(token=PAYMENT_BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-        await payment_bot.delete_webhook(drop_pending_updates=True)
+            me = await payment_bot.get_me()
+            PAYMENT_BOT_USERNAME["value"] = me.username
 
-        me_payment = await payment_bot.get_me()
-        PAYMENT_BOT_USERNAME["value"] = me_payment.username
+            dp_payment = Dispatcher()
+            await setup_payment_bot_handlers(dp_payment, main_bot)
 
-        dp_payment = Dispatcher()
-        await setup_payment_bot_handlers(dp_payment, main_bot)
+            tasks.append(asyncio.create_task(
+                dp_payment.start_polling(payment_bot, allowed_updates=dp_payment.resolve_used_update_types())
+            ))
+            print(f"✅ Бот оплаты запущен → @{me.username}")
+        except Exception as e:
+            print(f"❌ Ошибка бота оплаты: {e}")
 
-        tasks.append(asyncio.create_task(dp_payment.start_polling(
-            payment_bot,
-            allowed_updates=dp_payment.resolve_used_update_types()
-        )))
-        print("✅ Бот для оплаты запущен")
-    except Exception as e:
-        print(f"❌ Ошибка бота оплаты: {e}")
-
-    # ===== ВСПОМОГАТЕЛЬНЫЕ БОТЫ =====
+    # ====================== ВСПОМОГАТЕЛЬНЫЕ БОТЫ ======================
     for token in AUX_TOKENS:
         try:
             aux_bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
             await aux_bot.delete_webhook(drop_pending_updates=True)
-
+            
             dp_aux = Dispatcher()
 
             @dp_aux.message(Command("start"))
-            async def aux_start(message: Message):
-                await message.answer(aux_message, disable_web_page_preview=True)
+            async def aux_start(msg: Message):
+                await msg.answer(aux_message, disable_web_page_preview=True)
 
-            tasks.append(asyncio.create_task(dp_aux.start_polling(
-                aux_bot,
-                allowed_updates=["message"]
-            )))
-            
-            GLOBAL_BOTS_POOL.append(aux_bot)  # ← Добавлено: теперь рассылка идёт и через эти боты
+            tasks.append(asyncio.create_task(
+                dp_aux.start_polling(aux_bot, allowed_updates=["message"])
+            ))
+            GLOBAL_BOTS_POOL.append(aux_bot)
             print(f"✅ Вспомогательный бот запущен")
-            
         except Exception as e:
-            print(f"❌ Ошибка вспомогательного бота: {e}")
-            print(f"🚀 Всего запущено ботов в пуле: {len(GLOBAL_BOTS_POOL)}")
+            print(f"❌ Вспомогательный бот упал: {e}")
 
     if not tasks:
-        print("❌ Ни один бот не запустился, завершаю работу.")
+        print("❌ Ни один бот не был запущен. Проверь токены!")
         return
 
+    print(f"🚀 Всего ботов в пуле: {len(GLOBAL_BOTS_POOL)}")
     await asyncio.gather(*tasks, return_exceptions=True)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
