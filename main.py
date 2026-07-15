@@ -834,147 +834,102 @@ async def start(message: Message, bot: Bot):
     name = message.from_user.first_name
     username = message.from_user.username
     args = message.text.split()
-
-    # ---- НОВОЕ: обработка claim_<id> — получение товара после оплаты во втором боте ----
+    
+    # Обработка получения товара по claim
     if len(args) > 1 and args[1].startswith("claim_"):
         claim_id = args[1][len("claim_"):]
-        order = await get_order(claim_id=claim_id)
+        async with db.execute(
+            "SELECT user_id, item_type, item_data, status, payment_id FROM payment_orders WHERE claim_id = ?",
+            (claim_id,)
+        ) as cur:
+            order = await cur.fetchone()
+        
         if not order:
-            return await message.answer("❌ Ссылка получения товара недействительна.")
-        if order["user_id"] != user_id:
-            return await message.answer("❌ Эта ссылка предназначена для другого пользователя.")
-        if order["status"] == "claimed":
-            return await message.answer("ℹ️ Товар по этому заказу уже был выдан ранее.")
-        if order["status"] != "paid":
-            return await message.answer("❌ Оплата по этому заказу ещё не подтверждена.")
-
-        await process_payment(user_id, order["item_type"], order["item_data"], bot)
+            return await message.answer("❌ Ссылка недействительна.")
+        
+        uid, item_type, item_data, status, payment_id = order
+        if uid != user_id:
+            return await message.answer("❌ Не ваша ссылка.")
+        if status == "claimed":
+            return await message.answer("ℹ️ Товар уже получен.")
+        if status != "paid":
+            return await message.answer("❌ Оплата не подтверждена.")
+        
+        await process_payment(user_id, item_type, json.loads(item_data), bot)
         await db.execute(
             "UPDATE payment_orders SET status = 'claimed', claimed_at = ? WHERE payment_id = ?",
-            (datetime.now().isoformat(), order["payment_id"])
+            (datetime.now().isoformat(), payment_id)
         )
         await db.commit()
+        
         udata = await get_user_data(user_id, name, username)
         return await message.answer(
-            f"✅ <b>Товар выдан!</b>\n\n💰 Баланс: <b>{udata['diamonds']}</b> 💎",
+            f"✅ Товар выдан!\n\n💰 Баланс: {udata['diamonds']} 💎",
             reply_markup=await main_menu(user_id)
         )
-
-    async with db.execute("SELECT referred_by, is_referral_rewarded FROM users WHERE user_id = ?", (user_id,)) as cur:
-        existing = await cur.fetchone()
-
-    is_new_user = (existing is None)
-
-    if is_new_user and len(args) > 1:
-        param = args[1]
-        if param.isdigit():
-            referrer_id = int(param)
-            if referrer_id != user_id:
+    
+    # Реферальная ссылка
+    if len(args) > 1 and args[1].isdigit():
+        referrer_id = int(args[1])
+        if referrer_id != user_id:
+            async with db.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,)) as cur:
+                existing = await cur.fetchone()
+            if not existing:
                 await db.execute(
-                    "INSERT INTO users (user_id, first_name, username, diamonds, referred_by, is_referral_rewarded) VALUES (?, ?, ?, 8.0, ?, 0)",
+                    "INSERT INTO users (user_id, first_name, username, diamonds, referred_by) VALUES (?, ?, ?, 8.0, ?)",
                     (user_id, name, username, referrer_id)
                 )
                 await db.commit()
-
+    
     udata = await get_user_data(user_id, name, username)
-
+    
+    # Проверка подписки
     if not await check_subscription(user_id, bot):
         kb = InlineKeyboardBuilder()
         for channel_data in CHANNELS:
-            if isinstance(channel_data, (tuple, list)) and len(channel_data) >= 3:
-                _, ch_name, ch_url = channel_data
-            else:
-                ch_id = channel_data[0] if isinstance(channel_data, (tuple, list)) else channel_data
-                ch_name = "Канал"
-                ch_url = f"https://t.me/{str(ch_id).replace('@', '')}"
+            _, ch_name, ch_url = channel_data
             kb.button(text=ch_name, url=ch_url)
         kb.button(text="✅ Я подписался", callback_data="check_sub")
         kb.adjust(1)
-        return await message.answer("👋 Для работы бота подпишись на каналы спонсоров:", reply_markup=kb.as_markup())
-
- if udata["referred_by"] and udata["is_referral_rewarded"] == 0:
-    ref_id = udata["referred_by"]
-    try: base_reward = float(await get_setting("referral_reward"))
-    except: base_reward = 4.0
+        return await message.answer("👋 Подпишись на каналы:", reply_markup=kb.as_markup())
     
-    # Проверяем глобальный x2 ивент
-    if await is_event_active("global_x2_until"):
-        base_reward *= 2
+    # НАЧИСЛЕНИЕ РЕФЕРАЛЬНОЙ НАГРАДЫ (ИСПРАВЛЕНО)
+    if udata["referred_by"] and udata["is_referral_rewarded"] == 0:
+        ref_id = udata["referred_by"]
+        try:
+            base_reward = float(await get_setting("referral_reward"))
+        except:
+            base_reward = 4.0
+        
+        # Проверяем глобальный x2 ивент
+        if await is_event_active("global_x2_until"):
+            base_reward *= 2
+        
+        # Проверяем персональный x2 буст у реферала
+        async with db.execute("SELECT x2_until FROM users WHERE user_id = ?", (ref_id,)) as cur:
+            ref_x2 = await cur.fetchone()
+        if ref_x2 and ref_x2[0] and datetime.fromisoformat(ref_x2[0]) > datetime.now():
+            base_reward *= 2
+        
+        await add_diamonds(ref_id, base_reward)
+        await db.execute("UPDATE users SET is_referral_rewarded = 1 WHERE user_id = ?", (user_id,))
+        await db.commit()
+        
+        # Отправляем уведомление рефералу
+        try:
+            await bot.send_message(ref_id, f"🎉 Твой реферал {name} активировался! Получено +{base_reward} 💎")
+        except:
+            pass
+        
+        # Логируем
+        await send_log(f"👥 Реферал {name} (ID: {user_id}) привел {ref_id} -> +{base_reward} 💎")
     
-    # Проверяем персональный x2 буст у реферала
-    async with db.execute("SELECT x2_until FROM users WHERE user_id = ?", (ref_id,)) as cur:
-        ref_x2 = await cur.fetchone()
-    if ref_x2 and ref_x2[0] and datetime.fromisoformat(ref_x2[0]) > datetime.now():
-        base_reward *= 2
-    
-    await add_diamonds(ref_id, base_reward)
-    await db.execute("UPDATE users SET is_referral_rewarded = 1 WHERE user_id = ?", (user_id,))
-    await db.commit()
-    
-    # Отправляем уведомление рефералу
-    try:
-        await bot.send_message(ref_id, f"🎉 Твой реферал {name} активировался! Получено +{base_reward} 💎")
-    except:
-        pass
-    
-    # Логируем
-    await send_log(f"👥 Реферал {name} (ID: {user_id}) привел {ref_id} -> +{base_reward} 💎")
-    
-    @router.callback_query(F.data == "daily_reward")
-async def daily_reward(callback: CallbackQuery):
-    user_id = callback.from_user.id
-    
-    can_claim, remaining = await check_daily_reward(user_id)
-    
-    if not can_claim:
-        hours = remaining // 3600
-        minutes = (remaining % 3600) // 60
-        return await callback.answer(f"⏳ Через {hours}ч {minutes}м", show_alert=True)
-    
-    reward = random.randint(2, 8)
-    await add_diamonds(user_id, reward)
-    await db.execute(
-        "UPDATE users SET daily_reward_last = ? WHERE user_id = ?",
-        (datetime.now().isoformat(), user_id)
-    )
-    await db.commit()
-    
-    await callback.answer(f"🎉 +{reward} 💎", show_alert=True)
-    await callback.message.edit_text(
-        f"🎁 Ежедневная награда!\n\n+{reward} 💎\n💰 Баланс: {(await get_user_data(user_id))['diamonds']} 💎",
+    await message.answer(
+        f"👋 Добро пожаловать!\n\n💰 Баланс: {udata['diamonds']} 💎",
         reply_markup=await main_menu(user_id)
     )
-    await send_log(f"👤 {callback.from_user.first_name} (ID: {user_id}) получил ежедневную награду: +{reward} 💎")
-
-@router.callback_query(F.data == "daily_reward_disabled")
-async def daily_reward_disabled(callback: CallbackQuery):
-    await callback.answer("⏳ Подождите до следующей награды!", show_alert=True)
-
-@router.callback_query(F.data == "check_sub")
-async def check_sub(callback: CallbackQuery, bot: Bot):
-    user_id = callback.from_user.id
-    if await check_subscription(user_id, bot):
-        udata = await get_user_data(user_id, callback.from_user.first_name, callback.from_user.username)
-
-        if udata["referred_by"] and udata["is_referral_rewarded"] == 0:
-            ref_id = udata["referred_by"]
-            async with db.execute("SELECT premium, x2_until FROM users WHERE user_id = ?", (ref_id,)) as cur:
-                ref_info = await cur.fetchone()
-            if ref_info:
-                try: base_reward = float(await get_setting("referral_reward"))
-                except (ValueError, TypeError): base_reward = 4.0
-                if await is_event_active("global_x2_until"): base_reward *= 2
-                if ref_info[1] and datetime.fromisoformat(ref_info[1]) > datetime.now(): base_reward *= 2
-
-                await add_diamonds(ref_id, base_reward)
-                await db.execute("UPDATE users SET is_referral_rewarded = 1 WHERE user_id = ?", (user_id,))
-                await db.commit()
-                try: await bot.send_message(ref_id, f"🎉 Твой реферал {callback.from_user.first_name} подписался! Начислено +{base_reward} 💎")
-                except Exception: pass
-
-        await callback.message.edit_text("✅ Подписка подтверждена!", reply_markup=await main_menu(user_id))
-    else:
-        await callback.answer("❌ Ты не подписался на все каналы!", show_alert=True)
+    
+    await send_log(f"👤 {name} (ID: {user_id}) запустил бота @{(await bot.get_me()).username}")
 
 @router.callback_query(F.data == "watch")
 async def watch(callback: CallbackQuery, bot: Bot):
