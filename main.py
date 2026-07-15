@@ -25,22 +25,25 @@ logging.basicConfig(level=logging.INFO)
 asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
 # ========================= НАСТРОЙКИ =========================
 
-BOT_TOKENS = [
-    "8732625593:AAFAGmj48saa1-Z6sPAwt_Qeyo4wNaatbXg",
-    "8785760867:AAEz-dD6wuFuIZj_1VHgtSS5F2KMboYQ1wI",
-]          # ваш основной бот
-PAYMENT_BOT_TOKEN = "8611620522:AAHwdkqnaCIJPPY-pNVgtV63xarI9vrzidY"      # бот для оплаты
-AUX_TOKENS = [
-    "8749652033:AAGxEa4xA2BU9wEUUcntIH3MfEoRVBniiwQ",
-    "8971264936:AAGnz7N90o_T1_EUEa694KTZThdFWGFhqgI",
+# ========================= НАСТРОЙКИ =========================
+
+# МНОГО ГЛАВНЫХ БОТОВ - КАЖДЫЙ РАБОТАЕТ САМ ПО СЕБЕ
+MAIN_BOT_TOKENS = [
+    "8732625593:AAFAGmj48saa1-Z6sPAwt_Qeyo4wNaatbXg",  # бот #1
+    "8785760867:AAEz-dD6wuFuIZj_1VHgtSS5F2KMboYQ1wI",  # бот #2
+    "8957092661:AAFutdszFsmtxm-SHEJ6Kpe8U6gGJho_mys",  # бот #3
+    # ДОБАВЛЯЙТЕ СКОЛЬКО УГОДНО ТОКЕНОВ СЮДА
 ]
 
-ADMIN_IDS = [
-    8603534638,
-    8570452473,
-    8502341995,
-    8794011165
-]
+# ОДИН БОТ ДЛЯ ОПЛАТЫ
+PAYMENT_BOT_TOKEN = "8611620522:AAHwdkqnaCIJPPY-pNVgtV63xarI9vrzidY"
+
+# ГРУППА ДЛЯ ЛОГОВ (ЗАМЕНИТЕ НА ВАШ ID)
+LOG_GROUP_ID = -5417151890  # <--- СЮДА ВСТАВЬТЕ ID ВАШЕЙ ГРУППЫ
+
+# ОСТАЛЬНЫЕ НАСТРОЙКИ ОСТАЮТСЯ БЕЗ ИЗМЕНЕНИЙ
+ADMIN_IDS = [8603534638, 8570452473, 8502341995, 8794011165]
+# ... и т.д.
 
 CHANNELS = [
     (-1003475196063, "Наш канал", "https://t.me/+JypFAG4wqgk0ZTEy"),
@@ -79,11 +82,47 @@ for pack_dict in (PACKSZVEZDA, PROCHIEPAKI):
         pack_data["folder"].mkdir(exist_ok=True)
 
 DB_PATH = DATA_DIR / "bot.db"
-db = None
+# ========================= ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ =========================
 
-GLOBAL_BOTS_POOL = []
-MAIN_BOT_REF = {"bot": None}
-PAYMENT_BOT_USERNAME = {"value": None}
+db = None
+MAIN_BOTS = {}          # token: bot_instance
+ACTIVE_BOTS = {}        # token: username
+PAYMENT_BOT_USERNAME = None
+PAYMENT_BOT_INSTANCE = None
+BOT_INSTANCES = {}      # для хранения ссылок на ботов
+
+# ========================= ЛОГГЕР =========================
+
+async def send_log(text: str, bot=None):
+    """Отправляет лог в группу"""
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    log_text = f"[{timestamp}] {text}"
+    print(log_text)
+    
+    if bot is None and MAIN_BOTS:
+        bot = list(MAIN_BOTS.values())[0]
+    
+    if bot:
+        try:
+            await bot.send_message(LOG_GROUP_ID, f"📋 {log_text}")
+        except Exception as e:
+            print(f"Ошибка отправки лога: {e}")
+
+async def log_bot_status():
+    """Логирует статус всех ботов"""
+    status_text = "🤖 <b>СТАТУС БОТОВ:</b>\n\n"
+    for token, username in ACTIVE_BOTS.items():
+        status_text += f"✅ @{username} — активен\n"
+    
+    status_text += f"\n👥 Всего ботов: <b>{len(ACTIVE_BOTS)}</b>\n"
+    status_text += f"💳 Бот оплаты: @{PAYMENT_BOT_USERNAME or 'не запущен'}"
+    
+    bot = list(MAIN_BOTS.values())[0] if MAIN_BOTS else None
+    if bot:
+        try:
+            await bot.send_message(LOG_GROUP_ID, status_text)
+        except Exception as e:
+            print(f"Ошибка логирования статуса: {e}")
 
 # ========================= СОСТОЯНИЯ (FSM) =========================
 
@@ -143,27 +182,28 @@ async def init_db():
     except aiosqlite.OperationalError:
         pass
 
-    try:
-        await db.execute("ALTER TABLE users ADD COLUMN is_referral_rewarded INTEGER DEFAULT 0")
-        await db.commit()
-        print("✅ Миграция: добавлена колонка is_referral_rewarded")
-    except aiosqlite.OperationalError:
-        pass
+   # В init_db(), после создания таблицы users, добавьте эти ALTER TABLE:
 
-    try:
-        await db.execute("ALTER TABLE users ADD COLUMN daily_won REAL DEFAULT 0")
-        await db.commit()
-        print("✅ Миграция: добавлена колонка daily_won")
-    except aiosqlite.OperationalError:
-        pass
+try:
+    await db.execute("ALTER TABLE users ADD COLUMN daily_reward_last TEXT DEFAULT NULL")
+    await db.commit()
+    print("✅ Добавлено поле daily_reward_last")
+except aiosqlite.OperationalError:
+    pass
 
-    try:
-        await db.execute("ALTER TABLE users ADD COLUMN daily_reset_date TEXT DEFAULT NULL")
-        await db.commit()
-        print("✅ Миграция: добавлена колонка daily_reset_date")
-    except aiosqlite.OperationalError:
-        pass
+try:
+    await db.execute("ALTER TABLE users ADD COLUMN daily_won REAL DEFAULT 0")
+    await db.commit()
+    print("✅ Добавлено поле daily_won")
+except aiosqlite.OperationalError:
+    pass
 
+try:
+    await db.execute("ALTER TABLE users ADD COLUMN daily_reset_date TEXT DEFAULT NULL")
+    await db.commit()
+    print("✅ Добавлено поле daily_reset_date")
+except aiosqlite.OperationalError:
+    pass
     try:
         await db.execute("ALTER TABLE users ADD COLUMN username TEXT DEFAULT NULL")
         await db.commit()
@@ -234,6 +274,7 @@ async def init_db():
             item_type TEXT,
             item_data TEXT,
             stars_price INTEGER,
+            bot_token TEXT,
             status TEXT DEFAULT 'pending',
             created_at TEXT,
             paid_at TEXT,
@@ -241,6 +282,15 @@ async def init_db():
         )
     """)
     await db.commit()
+    # Таблица для статуса ботов
+await db.execute("""
+    CREATE TABLE IF NOT EXISTS bot_status (
+        token TEXT PRIMARY KEY,
+        username TEXT,
+        last_heartbeat TEXT,
+        is_active INTEGER DEFAULT 1
+    )
+""")
 
 # ========================= ХЕЛПЕРЫ =========================
 
@@ -385,22 +435,45 @@ async def get_order(payment_id: str = None, claim_id: str = None):
         "status": row[6],
     }
 
-async def generate_payment_link(user_id: int, item_type: str, item_data: dict, stars_price: int) -> str:
-    """Создаёт заказ в БД и возвращает ссылку на бота оплаты."""
-    payment_id = await create_payment_order(user_id, item_type, item_data, stars_price)
-
-    # Чистим протухшие заказы (старше 6 часов и всё ещё pending)
+async def generate_payment_link(user_id: int, item_type: str, item_data: dict, stars_price: int, bot_token: str = None) -> str:
+    """Создаёт заказ и возвращает ссылку на бота оплаты"""
+    payment_id = f"pay_{uuid.uuid4().hex[:16]}"
+    
+    # Сохраняем, из какого бота пришел запрос
+    if bot_token is None:
+        bot_token = list(MAIN_BOTS.keys())[0] if MAIN_BOTS else ""
+    
+    await db.execute(
+        """INSERT INTO payment_orders 
+           (payment_id, user_id, item_type, item_data, stars_price, bot_token, status, created_at) 
+           VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)""",
+        (payment_id, user_id, item_type, json.dumps(item_data), stars_price, bot_token, datetime.now().isoformat())
+    )
+    await db.commit()
+    
+    # Чистим старые заказы
     cutoff = (datetime.now() - timedelta(hours=6)).isoformat()
     await db.execute("DELETE FROM payment_orders WHERE status = 'pending' AND created_at < ?", (cutoff,))
     await db.commit()
+    
+    return f"https://t.me/{PAYMENT_BOT_USERNAME}?start={payment_id}"
 
-    if PAYMENT_BOT_USERNAME["value"] is None:
-        payment_bot = Bot(token=PAYMENT_BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-        me = await payment_bot.get_me()
-        PAYMENT_BOT_USERNAME["value"] = me.username
-        await payment_bot.session.close()
-
-    return f"https://t.me/{PAYMENT_BOT_USERNAME['value']}?start={payment_id}"
+async def check_daily_reward(user_id: int) -> tuple:
+    """Проверяет, можно ли получить ежедневную награду. Возвращает (можно_ли, осталось_секунд)"""
+    async with db.execute("SELECT daily_reward_last FROM users WHERE user_id = ?", (user_id,)) as cur:
+        row = await cur.fetchone()
+    
+    if not row or not row[0]:
+        return True, 0
+    
+    last = datetime.fromisoformat(row[0])
+    now = datetime.now()
+    elapsed = (now - last).total_seconds()
+    
+    if elapsed >= 86400:
+        return True, 0
+    else:
+        return False, int(86400 - elapsed)
 
 async def process_payment(user_id: int, item_type: str, item_data: dict, main_bot: Bot):
     """Выдаёт товар после подтверждённой оплаты."""
@@ -627,6 +700,7 @@ async def main_menu(user_id: int):
     kb = InlineKeyboardBuilder()
     kb.button(text=f"📺 Смотреть видео ({video_price:g} 💎)", callback_data="watch")
     kb.button(text=f"📸 Посмотреть фото ({photo_price:g} 💎)", callback_data="watch_photo")
+    kb.button(text="🎁 Ежедневная награда", callback_data="daily_reward")
     kb.button(text="🛒 Магазин 💰", callback_data="shop_main")
     kb.button(text="🎟 Промокоды", callback_data="promo_menu")
     kb.button(text="🎮 Казино (Тест)", callback_data="casino_menu")
@@ -636,6 +710,12 @@ async def main_menu(user_id: int):
     if user_id in ADMIN_IDS:
         kb.button(text="⚙️ Admin Panel", callback_data="admin_enter")
     kb.adjust(1)
+    # В main_menu(), перед return, добавьте:
+can_claim, remaining = await check_daily_reward(user_id)
+if not can_claim:
+    hours = remaining // 3600
+    minutes = (remaining % 3600) // 60
+    kb.button(text=f"⏳ {hours}ч {minutes}м", callback_data="daily_reward_disabled")
     return kb.as_markup()
 
 def shop_categories_kb():
@@ -663,6 +743,7 @@ def shop_diamonds_kb(discount_pct: int = 0, timer: str = ""):
     kb.button(text="◀️ Назад в магазин", callback_data="shop_main")
     kb.adjust(1)
     return kb.as_markup()
+    
 
 def shop_abilities_kb(discount_pct: int = 0, timer: str = ""):
     p1, p2 = 50, 150
@@ -811,25 +892,63 @@ async def start(message: Message, bot: Bot):
         kb.adjust(1)
         return await message.answer("👋 Для работы бота подпишись на каналы спонсоров:", reply_markup=kb.as_markup())
 
-    if udata["referred_by"] and udata["is_referral_rewarded"] == 0:
-        ref_id = udata["referred_by"]
-        async with db.execute("SELECT premium, x2_until FROM users WHERE user_id = ?", (ref_id,)) as cur:
-            ref_info = await cur.fetchone()
+ if udata["referred_by"] and udata["is_referral_rewarded"] == 0:
+    ref_id = udata["referred_by"]
+    try: base_reward = float(await get_setting("referral_reward"))
+    except: base_reward = 4.0
+    
+    # Проверяем глобальный x2 ивент
+    if await is_event_active("global_x2_until"):
+        base_reward *= 2
+    
+    # Проверяем персональный x2 буст у реферала
+    async with db.execute("SELECT x2_until FROM users WHERE user_id = ?", (ref_id,)) as cur:
+        ref_x2 = await cur.fetchone()
+    if ref_x2 and ref_x2[0] and datetime.fromisoformat(ref_x2[0]) > datetime.now():
+        base_reward *= 2
+    
+    await add_diamonds(ref_id, base_reward)
+    await db.execute("UPDATE users SET is_referral_rewarded = 1 WHERE user_id = ?", (user_id,))
+    await db.commit()
+    
+    # Отправляем уведомление рефералу
+    try:
+        await bot.send_message(ref_id, f"🎉 Твой реферал {name} активировался! Получено +{base_reward} 💎")
+    except:
+        pass
+    
+    # Логируем
+    await send_log(f"👥 Реферал {name} (ID: {user_id}) привел {ref_id} -> +{base_reward} 💎")
+    
+    @router.callback_query(F.data == "daily_reward")
+async def daily_reward(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    
+    can_claim, remaining = await check_daily_reward(user_id)
+    
+    if not can_claim:
+        hours = remaining // 3600
+        minutes = (remaining % 3600) // 60
+        return await callback.answer(f"⏳ Через {hours}ч {minutes}м", show_alert=True)
+    
+    reward = random.randint(2, 8)
+    await add_diamonds(user_id, reward)
+    await db.execute(
+        "UPDATE users SET daily_reward_last = ? WHERE user_id = ?",
+        (datetime.now().isoformat(), user_id)
+    )
+    await db.commit()
+    
+    await callback.answer(f"🎉 +{reward} 💎", show_alert=True)
+    await callback.message.edit_text(
+        f"🎁 Ежедневная награда!\n\n+{reward} 💎\n💰 Баланс: {(await get_user_data(user_id))['diamonds']} 💎",
+        reply_markup=await main_menu(user_id)
+    )
+    await send_log(f"👤 {callback.from_user.first_name} (ID: {user_id}) получил ежедневную награду: +{reward} 💎")
 
-        if ref_info:
-            try: base_reward = float(await get_setting("referral_reward"))
-            except (ValueError, TypeError): base_reward = 4.0
-            if await is_event_active("global_x2_until"): base_reward *= 2
-            if ref_info[1] and datetime.fromisoformat(ref_info[1]) > datetime.now(): base_reward *= 2
-
-            await add_diamonds(ref_id, base_reward)
-            await db.execute("UPDATE users SET is_referral_rewarded = 1 WHERE user_id = ?", (user_id,))
-            await db.commit()
-
-            try: await bot.send_message(ref_id, f"🎉 Твой реферал {name} успешно выполнил условия подписки! Тебе начислено +{base_reward} 💎")
-            except Exception: pass
-
-    await message.answer(f"👋 Добро пожаловать! 💎\n\nНа балансе: <b>{udata['diamonds']}</b> алмазов", reply_markup=await main_menu(user_id))
+@router.callback_query(F.data == "daily_reward_disabled")
+async def daily_reward_disabled(callback: CallbackQuery):
+    await callback.answer("⏳ Подождите до следующей награды!", show_alert=True)
 
 @router.callback_query(F.data == "check_sub")
 async def check_sub(callback: CallbackQuery, bot: Bot):
@@ -1363,12 +1482,14 @@ async def process_custom_diamonds(message: Message, state: FSMContext):
         pct = int(await get_setting("global_discount_percent"))
         stars_price = max(1, int(stars_price * (1 - pct / 100)))
 
-    payment_link = await generate_payment_link(
-        message.from_user.id,
-        "diamonds",
-        {'amount': diamonds},
-        stars_price
-    )
+bot_token = list(MAIN_BOTS.keys())[list(MAIN_BOTS.values()).index(bot)]  # получаем токен текущего бота
+payment_link = await generate_payment_link(
+    user_id, 
+    "diamonds", 
+    {"amount": diamonds}, 
+    stars_price,
+    bot_token  # <--- передаем токен
+)
 
     kb = InlineKeyboardBuilder()
     kb.button(text="💳 Перейти к оплате", url=payment_link)
@@ -2310,6 +2431,29 @@ async def setup_payment_bot_handlers(dp_payment: Dispatcher, main_bot: Bot):
                     .button(text="🔙 Вернуться в главного бота", url="https://t.me/zemlysan_DBot")
                     .as_markup()
             )
+            async def heartbeat_checker():
+    """Проверка активности ботов каждую минуту"""
+    while True:
+        await asyncio.sleep(60)
+        now = datetime.now()
+        
+        for token, username in list(ACTIVE_BOTS.items()):
+            try:
+                bot = MAIN_BOTS.get(token)
+                if bot:
+                    me = await bot.get_me()
+                    await db.execute(
+                        "UPDATE bot_status SET last_heartbeat = ?, is_active = 1 WHERE token = ?",
+                        (now.isoformat(), token)
+                    )
+                    await db.commit()
+            except Exception as e:
+                await send_log(f"⚠️ Бот @{username} не отвечает: {e}")
+                await db.execute(
+                    "UPDATE bot_status SET is_active = 0 WHERE token = ?",
+                    (token,)
+                )
+                await db.commit()
 
         payment_id = args[1]
         order = await get_order(payment_id=payment_id)
@@ -2353,128 +2497,114 @@ async def setup_payment_bot_handlers(dp_payment: Dispatcher, main_bot: Bot):
             return await query.answer(ok=False, error_message="Заказ более недействителен.")
         await query.answer(ok=True)
 
-    @dp_payment.message(F.successful_payment)
-    async def successful_payment_handler(message: Message):
-        payment_id = message.successful_payment.invoice_payload
-        order = await get_order(payment_id=payment_id)
-        if not order:
-            return await message.answer("⚠️ Оплата получена, но заказ не найден. Обратитесь в поддержку: @zemelya_admin")
-        if order["status"] != "pending":
-            return  # уже обработан (защита от дублей)
-
-        claim_id = uuid.uuid4().hex[:16]
-        await db.execute(
-            "UPDATE payment_orders SET status = 'paid', claim_id = ?, paid_at = ? WHERE payment_id = ?",
-            (claim_id, datetime.now().isoformat(), payment_id)
-        )
-        await db.commit()
-
-        main_bot_username = (await main_bot.get_me()).username
-        claim_link = f"https://t.me/{main_bot_username}?start=claim_{claim_id}"
-
-        kb = InlineKeyboardBuilder()
-        kb.button(text="🎁 Получить товар", url=claim_link)
-        kb.adjust(1)
-
-        await message.answer(
-            "✅ <b>Оплата прошла успешно!</b>\n\n"
-            "Нажмите кнопку ниже, чтобы получить товар в главном боте:",
-            reply_markup=kb.as_markup()
-        )
+@dp_payment.message(F.successful_payment)
+async def successful_payment(message: Message):
+    payment_id = message.successful_payment.invoice_payload
+    now = datetime.now().isoformat()
+    
+    claim_id = uuid.uuid4().hex[:16]
+    await db.execute(
+        "UPDATE payment_orders SET status = 'paid', claim_id = ?, paid_at = ? WHERE payment_id = ?",
+        (claim_id, now, payment_id)
+    )
+    await db.commit()
+    
+    # Получаем токен главного бота, которому принадлежит заказ
+    async with db.execute("SELECT bot_token FROM payment_orders WHERE payment_id = ?", (payment_id,)) as cur:
+        row = await cur.fetchone()
+        bot_token = row[0] if row else list(MAIN_BOTS.keys())[0]
+    
+    # Получаем юзернейм правильного бота
+    bot_username = ACTIVE_BOTS.get(bot_token, "zemlysan_DBot")  # замените на дефолтный юзернейм
+    
+    claim_link = f"https://t.me/{bot_username}?start=claim_{claim_id}"
+    
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🎁 Получить товар", url=claim_link)
+    kb.adjust(1)
+    
+    await message.answer(
+        "✅ Оплата прошла успешно!\n\nНажмите кнопку, чтобы получить товар в главном боте:",
+        reply_markup=kb.as_markup()
+    )
+    
+    await send_log(f"💳 Оплата {payment_id} от @{message.from_user.username or message.from_user.first_name}")
 
 # ========================= ГЛАВНЫЙ ЗАПУСК =========================
 
 async def main():
-    await init_db()
-    asyncio.create_task(delete_old_videos())
-
-    print("🚀 Запуск ботов...")
-
-    GLOBAL_BOTS_POOL.clear()
-
-    tasks = []
-
-    # ====================== ГЛАВНЫЙ БОТ ======================
-    main_bot = None
+    global db, MAIN_BOTS, ACTIVE_BOTS, PAYMENT_BOT_USERNAME
+    
+    db = await init_db()
+    await send_log("🚀 Запуск системы...")
+    
+    # Создаем роутер один раз для всех ботов
+    router = create_router()
+    
+    bot_tasks = []
+    
+    # ЗАПУСК ВСЕХ ГЛАВНЫХ БОТОВ
+    for token in MAIN_BOT_TOKENS:
+        try:
+            bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+            await bot.delete_webhook(drop_pending_updates=True)
+            
+            me = await bot.get_me()
+            username = me.username
+            
+            MAIN_BOTS[token] = bot
+            ACTIVE_BOTS[token] = username
+            
+            # Сохраняем статус в БД
+            await db.execute(
+                "INSERT OR REPLACE INTO bot_status (token, username, last_heartbeat, is_active) VALUES (?, ?, ?, 1)",
+                (token, username, datetime.now().isoformat())
+            )
+            await db.commit()
+            
+            dp = Dispatcher()
+            dp.include_router(router)
+            
+            # Добавляем мидлвари (если есть)
+            # dp.message.outer_middleware(BanMiddleware())
+            # dp.callback_query.outer_middleware(BanMiddleware())
+            
+            bot_tasks.append(asyncio.create_task(
+                dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+            ))
+            
+            await send_log(f"✅ Бот @{username} запущен")
+            
+        except Exception as e:
+            await send_log(f"❌ Ошибка запуска бота: {e}")
+    
+    # ЗАПУСК БОТА ОПЛАТЫ
     try:
-        main_bot = Bot(
-            token=MAIN_BOT_TOKEN, 
-            default=DefaultBotProperties(parse_mode=ParseMode.HTML)
-        )
-        await main_bot.delete_webhook(drop_pending_updates=True)
+        payment_bot = Bot(token=PAYMENT_BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+        await payment_bot.delete_webhook(drop_pending_updates=True)
         
-        GLOBAL_BOTS_POOL.append(main_bot)
-        MAIN_BOT_REF["bot"] = main_bot
-
-        dp_main = Dispatcher()
-        dp_main.message.outer_middleware(BanMiddleware())
-        dp_main.callback_query.outer_middleware(BanMiddleware())
-        dp_main.message.outer_middleware(MaintenanceMiddleware())
-        dp_main.callback_query.outer_middleware(MaintenanceMiddleware())
-        dp_main.message.outer_middleware(SubscriptionMiddleware())
-        dp_main.callback_query.outer_middleware(SubscriptionMiddleware())
+        me = await payment_bot.get_me()
+        PAYMENT_BOT_USERNAME = me.username
         
-        dp_main.include_router(router)
-
-        tasks.append(asyncio.create_task(
-            dp_main.start_polling(main_bot, allowed_updates=dp_main.resolve_used_update_types())
+        dp_payment = Dispatcher()
+        await setup_payment_bot_handlers(dp_payment)  # <--- ЭТУ ФУНКЦИЮ НАДО ПЕРЕДЕЛАТЬ
+        
+        bot_tasks.append(asyncio.create_task(
+            dp_payment.start_polling(payment_bot, allowed_updates=dp_payment.resolve_used_update_types())
         ))
-        print(f"✅ Главный бот запущен → @{ (await main_bot.get_me()).username }")
+        await send_log(f"✅ Бот оплаты @{PAYMENT_BOT_USERNAME} запущен")
         
     except Exception as e:
-        print(f"❌ Критическая ошибка запуска ГЛАВНОГО бота: {e}")
-        import traceback
-        traceback.print_exc()
-
-    # ====================== БОТ ОПЛАТЫ ======================
-    if main_bot:
-        try:
-            payment_bot = Bot(
-                token=PAYMENT_BOT_TOKEN, 
-                default=DefaultBotProperties(parse_mode=ParseMode.HTML)
-            )
-            await payment_bot.delete_webhook(drop_pending_updates=True)
-
-            me = await payment_bot.get_me()
-            PAYMENT_BOT_USERNAME["value"] = me.username
-
-            dp_payment = Dispatcher()
-            await setup_payment_bot_handlers(dp_payment, main_bot)
-
-            tasks.append(asyncio.create_task(
-                dp_payment.start_polling(payment_bot, allowed_updates=dp_payment.resolve_used_update_types())
-            ))
-            print(f"✅ Бот оплаты запущен → @{me.username}")
-        except Exception as e:
-            print(f"❌ Ошибка бота оплаты: {e}")
-
-    # ====================== ВСПОМОГАТЕЛЬНЫЕ БОТЫ ======================
-    for token in AUX_TOKENS:
-        try:
-            aux_bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-            await aux_bot.delete_webhook(drop_pending_updates=True)
-            
-            dp_aux = Dispatcher()
-
-            @dp_aux.message(Command("start"))
-            async def aux_start(msg: Message):
-                await msg.answer(aux_message, disable_web_page_preview=True)
-
-            tasks.append(asyncio.create_task(
-                dp_aux.start_polling(aux_bot, allowed_updates=["message"])
-            ))
-            GLOBAL_BOTS_POOL.append(aux_bot)
-            print(f"✅ Вспомогательный бот запущен")
-        except Exception as e:
-            print(f"❌ Вспомогательный бот упал: {e}")
-
-    if not tasks:
-        print("❌ Ни один бот не был запущен. Проверь токены!")
-        return
-
-    print(f"🚀 Всего ботов в пуле: {len(GLOBAL_BOTS_POOL)}")
-    await asyncio.gather(*tasks, return_exceptions=True)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+        await send_log(f"❌ Ошибка бота оплаты: {e}")
+    
+    # ЗАПУСК HEARTBEAT
+    bot_tasks.append(asyncio.create_task(heartbeat_checker()))
+    
+    # Логируем статус через 3 секунды
+    await asyncio.sleep(3)
+    await log_bot_status()
+    
+    await send_log(f"🚀 Запущено {len(MAIN_BOTS)} главных ботов")
+    
+    # Ждем все задачи
+    await asyncio.gather(*bot_tasks, return_exceptions=True)
