@@ -29,9 +29,9 @@ asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
 
 # МНОГО ГЛАВНЫХ БОТОВ - КАЖДЫЙ РАБОТАЕТ САМ ПО СЕБЕ
 MAIN_BOT_TOKENS = [
-    "8732625593:AAFAGmj48saa1-Z6sPAwt_Qeyo4wNaatbXg",  # бот #1
-    "8785760867:AAEz-dD6wuFuIZj_1VHgtSS5F2KMboYQ1wI",  # бот #2
-    "8957092661:AAFutdszFsmtxm-SHEJ6Kpe8U6gGJho_mys",  # бот #3
+    "8850923714:AAHbpaPvNlRY9Od7HLcfl5Iabd2kaE8KVY0",
+    "8570482228:AAEcejQ7tilDewJNs6rSL3A3c8wCXtEB2Xw",
+    "8693601845:AAFYjo4eWzZf_CosjKETLfvLmND7fNQGLyo",
     # ДОБАВЛЯЙТЕ СКОЛЬКО УГОДНО ТОКЕНОВ СЮДА
 ]
 
