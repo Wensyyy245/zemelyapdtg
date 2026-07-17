@@ -88,7 +88,8 @@ DB_PATH = DATA_DIR / "bot.db"
 
 db = None
 MAIN_BOTS = {}          # token: bot_instance
-ACTIVE_BOTS = {}        # token: username
+ACTIVE_BOTS = {}
+MIRROR_BOTS = {}   # token: username
 PAYMENT_BOT_USERNAME = None
 PAYMENT_BOT_INSTANCE = None
 BOT_INSTANCES = {}      # для хранения ссылок на ботов
@@ -161,6 +162,11 @@ class ShopStates(StatesGroup):
     custom_diamonds = State()
 
 # ========================= БАЗА ДАННЫХ =========================
+def create_router():
+    """Создает и возвращает роутер со всеми хендлерами"""
+    router = Router()
+    # Все хендлеры должны быть внутри этой функции
+    return router
 
 async def init_db():
     global db
@@ -763,13 +769,15 @@ async def main_menu(user_id: int):
     if user_id in ADMIN_IDS:
         kb.button(text="⚙️ Admin Panel", callback_data="admin_enter")
     kb.adjust(1)
-    # В main_menu(), перед return, добавьте:
-can_claim, remaining = await check_daily_reward(user_id)
-if not can_claim:
-    hours = remaining // 3600
-    minutes = (remaining % 3600) // 60
-    kb.button(text=f"⏳ {hours}ч {minutes}м", callback_data="daily_reward_disabled")
-    return kb.as_markup()
+    
+    # ДОБАВЛЯЕМ ПРОВЕРКУ ЕЖЕДНЕВНОЙ НАГРАДЫ
+    can_claim, remaining = await check_daily_reward(user_id)
+    if not can_claim:
+        hours = remaining // 3600
+        minutes = (remaining % 3600) // 60
+        kb.button(text=f"⏳ {hours}ч {minutes}м", callback_data="daily_reward_disabled")
+    
+    return kb.as_markup()  # <--- return должен быть здесь!
 
 def shop_categories_kb():
     kb = InlineKeyboardBuilder()
@@ -1265,6 +1273,35 @@ async def my_mirrors(callback: CallbackQuery):
 async def no_tokens(callback: CallbackQuery):
     await callback.answer("⏳ Нет доступных токенов для создания зеркал!", show_alert=True)
 
+@router.callback_query(F.data == "daily_reward")
+async def daily_reward(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    
+    can_claim, remaining = await check_daily_reward(user_id)
+    if not can_claim:
+        hours = remaining // 3600
+        minutes = (remaining % 3600) // 60
+        return await callback.answer(f"⏳ Через {hours}ч {minutes}м", show_alert=True)
+    
+    reward = random.randint(2, 8)
+    await add_diamonds(user_id, reward)
+    await db.execute(
+        "UPDATE users SET daily_reward_last = ? WHERE user_id = ?",
+        (datetime.now().isoformat(), user_id)
+    )
+    await db.commit()
+    
+    await callback.answer(f"🎉 +{reward} 💎", show_alert=True)
+    await callback.message.edit_text(
+        f"🎁 Ежедневная награда!\n\n+{reward} 💎",
+        reply_markup=await main_menu(user_id)
+    )
+    await send_log(f"👤 {callback.from_user.first_name} получил +{reward} 💎")
+
+@router.callback_query(F.data == "daily_reward_disabled")
+async def daily_reward_disabled(callback: CallbackQuery):
+    await callback.answer("⏳ Подождите до следующей награды!", show_alert=True)
+
 @router.callback_query(F.data == "admin_tokens")
 async def admin_tokens(callback: CallbackQuery):
     """Админ-панель управления токенами"""
@@ -1398,34 +1435,6 @@ async def promo_menu(callback: CallbackQuery):
 async def promo_activate(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text("📥 Введите промокод:")
     await state.set_state(PromoStates.activate_code)
-
-@router.callback_query(F.data == "create_mirror")
-async def create_mirror_start(callback: CallbackQuery, state: FSMContext):
-    """Начало создания зеркала"""
-    user_id = callback.from_user.id
-    
-    # Проверяем лимит
-    mirror_count = await get_mirror_count(user_id)
-    if mirror_count >= 5:
-        return await callback.answer("❌ Максимум 5 зеркал!", show_alert=True)
-    
-    # Проверяем доступные токены в БД
-    token_data = await tokens_db.get_available_token()
-    if not token_data:
-        return await callback.answer(
-            "❌ Нет доступных токенов! Администратор добавит токены позже.",
-            show_alert=True
-        )
-    
-    await callback.message.edit_text(
-        "🔑 <b>Создание зеркала</b>\n\n"
-        "1. Перейдите в @BotFather\n"
-        "2. Создайте нового бота /newbot\n"
-        "3. Скопируйте токен\n"
-        "4. Вставьте токен сюда:\n\n"
-        "⚠️ Токен: <code>1234567890:ABCdefGHIjklMNOpqrsTUVwxyz</code>"
-    )
-    await state.set_state(MirrorStates.enter_token)
 
 @router.message(MirrorStates.enter_token)
 async def process_mirror_token(message: Message, state: FSMContext, bot: Bot):
@@ -2823,7 +2832,7 @@ async def add_daily_win(user_id: int, amount: float):
 
 # ========================= БОТ ОПЛАТЫ: ЛОГИКА =========================
 
-async def setup_payment_bot_handlers(dp_payment: Dispatcher, main_bot: Bot):
+async def setup_payment_bot_handlers(dp_payment: Dispatcher, main_bot: Bot):  # <--- main_bot добавлен
     """Регистрирует хендлеры второго бота: реальный инвойс Stars + проверка оплаты."""
 
     @dp_payment.message(Command("start"))
@@ -2941,13 +2950,11 @@ async def successful_payment(message: Message):
 # ========================= ГЛАВНЫЙ ЗАПУСК =========================
 
 async def main():
-    global db, MAIN_BOTS, ACTIVE_BOTS, PAYMENT_BOT_USERNAME
+    global db, MAIN_BOTS, ACTIVE_BOTS, PAYMENT_BOT_USERNAME, MIRROR_BOTS, GLOBAL_BOTS_POOL
     
-    db = await init_db()
+    await init_db()
+    await tokens_db.init()  # <--- ДОБАВЬТЕ ИНИЦИАЛИЗАЦИЮ БД ТОКЕНОВ
     await send_log("🚀 Запуск системы...")
-    
-    # Создаем роутер один раз для всех ботов
-    router = create_router()
     
     bot_tasks = []
     
@@ -2962,6 +2969,9 @@ async def main():
             
             MAIN_BOTS[token] = bot
             ACTIVE_BOTS[token] = username
+            GLOBAL_BOTS_POOL.append(bot)  # <--- ДОБАВЛЯЕМ В ПУЛ
+            
+       
             
             # Сохраняем статус в БД
             await db.execute(
@@ -2995,7 +3005,7 @@ async def main():
         PAYMENT_BOT_USERNAME = me.username
         
         dp_payment = Dispatcher()
-        await setup_payment_bot_handlers(dp_payment)  # <--- ЭТУ ФУНКЦИЮ НАДО ПЕРЕДЕЛАТЬ
+        await setup_payment_bot_handlers(dp_payment, main_bot)  # <--- ЭТУ ФУНКЦИЮ НАДО ПЕРЕДЕЛАТЬ
         
         bot_tasks.append(asyncio.create_task(
             dp_payment.start_polling(payment_bot, allowed_updates=dp_payment.resolve_used_update_types())
@@ -3099,3 +3109,35 @@ async def main():
     
     # Ждем все задачи
     await asyncio.gather(*bot_tasks, return_exceptions=True)
+
+async def heartbeat_checker():
+    """Проверка активности ботов каждую минуту"""
+    while True:
+        await asyncio.sleep(60)
+        now = datetime.now()
+        for token, username in list(ACTIVE_BOTS.items()):
+            try:
+                bot = MAIN_BOTS.get(token)
+                if bot:
+                    await db.execute(
+                        "UPDATE bot_status SET last_heartbeat = ?, is_active = 1 WHERE token = ?",
+                        (now.isoformat(), token)
+                    )
+                    await db.commit()
+            except Exception as e:
+                await send_log(f"⚠️ Бот @{username} не отвечает: {e}")
+                await db.execute(
+                    "UPDATE bot_status SET is_active = 0 WHERE token = ?",
+                    (token,)
+                )
+                await db.commit()
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("🛑 Бот остановлен")
+    except Exception as e:
+        print(f"❌ Критическая ошибка: {e}")
+        import traceback
+        traceback.print_exc()
