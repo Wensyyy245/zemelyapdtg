@@ -162,12 +162,6 @@ class ShopStates(StatesGroup):
     custom_diamonds = State()
 
 # ========================= БАЗА ДАННЫХ =========================
-def create_router():
-    """Создает и возвращает роутер со всеми хендлерами"""
-    router = Router()
-    # Все хендлеры должны быть внутри этой функции
-    return router
-
 async def init_db():
     global db
     db = await aiosqlite.connect(DB_PATH)
@@ -187,27 +181,8 @@ async def init_db():
             keep_videos INTEGER DEFAULT 0
         )
     """)
-    # В init_db(), после создания payment_orders:
 
-# Таблица зеркал (связь с пользователями)
-await db.execute("""
-    CREATE TABLE IF NOT EXISTS mirrors (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        token TEXT,
-        bot_username TEXT,
-        status TEXT DEFAULT 'pending',
-        created_at TEXT,
-        activated_at TEXT,
-        last_heartbeat TEXT,
-        FOREIGN KEY (user_id) REFERENCES users (user_id)
-    )
-""")
-
-# Индексы для mirrors
-await db.execute("CREATE INDEX IF NOT EXISTS idx_mirrors_user ON mirrors (user_id)")
-await db.execute("CREATE INDEX IF NOT EXISTS idx_mirrors_status ON mirrors (status)")
-
+    # Миграции
     try:
         await db.execute("ALTER TABLE users ADD COLUMN banned_until INTEGER DEFAULT 0")
         await db.commit()
@@ -215,28 +190,27 @@ await db.execute("CREATE INDEX IF NOT EXISTS idx_mirrors_status ON mirrors (stat
     except aiosqlite.OperationalError:
         pass
 
-   # В init_db(), после создания таблицы users, добавьте эти ALTER TABLE:
+    try:
+        await db.execute("ALTER TABLE users ADD COLUMN daily_reward_last TEXT DEFAULT NULL")
+        await db.commit()
+        print("✅ Добавлено поле daily_reward_last")
+    except aiosqlite.OperationalError:
+        pass
 
-try:
-    await db.execute("ALTER TABLE users ADD COLUMN daily_reward_last TEXT DEFAULT NULL")
-    await db.commit()
-    print("✅ Добавлено поле daily_reward_last")
-except aiosqlite.OperationalError:
-    pass
+    try:
+        await db.execute("ALTER TABLE users ADD COLUMN daily_won REAL DEFAULT 0")
+        await db.commit()
+        print("✅ Добавлено поле daily_won")
+    except aiosqlite.OperationalError:
+        pass
 
-try:
-    await db.execute("ALTER TABLE users ADD COLUMN daily_won REAL DEFAULT 0")
-    await db.commit()
-    print("✅ Добавлено поле daily_won")
-except aiosqlite.OperationalError:
-    pass
+    try:
+        await db.execute("ALTER TABLE users ADD COLUMN daily_reset_date TEXT DEFAULT NULL")
+        await db.commit()
+        print("✅ Добавлено поле daily_reset_date")
+    except aiosqlite.OperationalError:
+        pass
 
-try:
-    await db.execute("ALTER TABLE users ADD COLUMN daily_reset_date TEXT DEFAULT NULL")
-    await db.commit()
-    print("✅ Добавлено поле daily_reset_date")
-except aiosqlite.OperationalError:
-    pass
     try:
         await db.execute("ALTER TABLE users ADD COLUMN username TEXT DEFAULT NULL")
         await db.commit()
@@ -244,6 +218,7 @@ except aiosqlite.OperationalError:
     except aiosqlite.OperationalError:
         pass
 
+    # Таблица настроек
     await db.execute("""
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
@@ -251,6 +226,7 @@ except aiosqlite.OperationalError:
         )
     """)
 
+    # Настройки по умолчанию
     await db.execute("INSERT OR IGNORE INTO settings VALUES ('global_x2_until', 'NULL')")
     await db.execute("INSERT OR IGNORE INTO settings VALUES ('global_discount_until', 'NULL')")
     await db.execute("INSERT OR IGNORE INTO settings VALUES ('global_discount_percent', '30')")
@@ -263,6 +239,7 @@ except aiosqlite.OperationalError:
     await db.execute("INSERT OR IGNORE INTO settings VALUES ('referral_reward', '4')")
     await db.execute("INSERT OR IGNORE INTO settings VALUES ('auto_ban_limit', '10000')")
 
+    # Таблица видео
     await db.execute("""
         CREATE TABLE IF NOT EXISTS videos (
             file_id TEXT,
@@ -271,6 +248,8 @@ except aiosqlite.OperationalError:
             delete_at TEXT
         )
     """)
+
+    # Таблица промокодов
     await db.execute("""
         CREATE TABLE IF NOT EXISTS promo_codes (
             code TEXT PRIMARY KEY,
@@ -279,6 +258,8 @@ except aiosqlite.OperationalError:
             uses_left INTEGER
         )
     """)
+
+    # Таблица активаций промокодов
     await db.execute("""
         CREATE TABLE IF NOT EXISTS promo_activations (
             user_id INTEGER,
@@ -286,6 +267,8 @@ except aiosqlite.OperationalError:
             PRIMARY KEY (user_id, code)
         )
     """)
+
+    # Таблица админ-паков
     await db.execute("""
         CREATE TABLE IF NOT EXISTS admin_packs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -298,7 +281,7 @@ except aiosqlite.OperationalError:
         )
     """)
 
-    # ---- НОВОЕ: таблица заказов для двухботовой оплаты Stars ----
+    # Таблица заказов для оплаты
     await db.execute("""
         CREATE TABLE IF NOT EXISTS payment_orders (
             payment_id TEXT PRIMARY KEY,
@@ -314,16 +297,37 @@ except aiosqlite.OperationalError:
             claimed_at TEXT
         )
     """)
+
+    # Таблица зеркал
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS mirrors (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            token TEXT,
+            bot_username TEXT,
+            status TEXT DEFAULT 'pending',
+            created_at TEXT,
+            activated_at TEXT,
+            last_heartbeat TEXT
+        )
+    """)
+
+    # Индексы для mirrors
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_mirrors_user ON mirrors (user_id)")
+    await db.execute("CREATE INDEX IF NOT EXISTS idx_mirrors_status ON mirrors (status)")
+
+    # Таблица статуса ботов
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS bot_status (
+            token TEXT PRIMARY KEY,
+            username TEXT,
+            last_heartbeat TEXT,
+            is_active INTEGER DEFAULT 1
+        )
+    """)
+
     await db.commit()
-    # Таблица для статуса ботов
-await db.execute("""
-    CREATE TABLE IF NOT EXISTS bot_status (
-        token TEXT PRIMARY KEY,
-        username TEXT,
-        last_heartbeat TEXT,
-        is_active INTEGER DEFAULT 1
-    )
-""")
+    print("✅ База данных инициализирована")
 
 # ========================= ХЕЛПЕРЫ =========================
 
