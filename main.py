@@ -1394,7 +1394,12 @@ async def admin_view_tokens(callback: CallbackQuery):
     tokens = await tokens_db.get_all_tokens()
     
     if not tokens:
-        return await callback.answer("Нет токенов в базе!", show_alert=True)
+        kb = InlineKeyboardBuilder()
+        kb.button(text="◀️ Назад", callback_data="admin_tokens")
+        return await callback.message.edit_text(
+            "📋 <b>Нет токенов в базе!</b>",
+            reply_markup=kb.as_markup()
+        )
     
     kb = InlineKeyboardBuilder()
     text = "📋 <b>Все токены:</b>\n\n"
