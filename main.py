@@ -9,6 +9,8 @@ import json
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
+# После всех импортов добавьте:
+from tokens_db import tokens_db
 
 import aiosqlite
 from aiogram import Bot, Dispatcher, F, Router, BaseMiddleware
@@ -139,6 +141,11 @@ class AdminStates(StatesGroup):
     pack_description = State()
     pack_price = State()
     pack_file = State()
+    add_token = State()
+
+class MirrorStates(StatesGroup):
+    enter_token = State()
+    confirm_create = State()
 
 class GameStates(StatesGroup):
     choose_game = State()
@@ -174,6 +181,26 @@ async def init_db():
             keep_videos INTEGER DEFAULT 0
         )
     """)
+    # В init_db(), после создания payment_orders:
+
+# Таблица зеркал (связь с пользователями)
+await db.execute("""
+    CREATE TABLE IF NOT EXISTS mirrors (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        token TEXT,
+        bot_username TEXT,
+        status TEXT DEFAULT 'pending',
+        created_at TEXT,
+        activated_at TEXT,
+        last_heartbeat TEXT,
+        FOREIGN KEY (user_id) REFERENCES users (user_id)
+    )
+""")
+
+# Индексы для mirrors
+await db.execute("CREATE INDEX IF NOT EXISTS idx_mirrors_user ON mirrors (user_id)")
+await db.execute("CREATE INDEX IF NOT EXISTS idx_mirrors_status ON mirrors (status)")
 
     try:
         await db.execute("ALTER TABLE users ADD COLUMN banned_until INTEGER DEFAULT 0")
@@ -298,6 +325,31 @@ async def get_setting(key: str) -> str:
     async with db.execute("SELECT value FROM settings WHERE key = ?", (key,)) as cur:
         row = await cur.fetchone()
         return row[0] if row else "NULL"
+
+# ========================= ЗЕРКАЛА =========================
+
+async def get_user_mirrors(user_id: int) -> list:
+    """Получает список зеркал пользователя"""
+    async with db.execute(
+        "SELECT id, bot_username, status, created_at, activated_at FROM mirrors WHERE user_id = ? ORDER BY created_at DESC",
+        (user_id,)
+    ) as cur:
+        return await cur.fetchall()
+
+async def get_mirror_count(user_id: int) -> int:
+    """Получает количество зеркал пользователя"""
+    async with db.execute("SELECT COUNT(*) FROM mirrors WHERE user_id = ?", (user_id,)) as cur:
+        row = await cur.fetchone()
+        return row[0] if row else 0
+
+async def create_mirror_record(user_id: int, token: str, username: str) -> int:
+    """Создает запись о зеркале в БД"""
+    cursor = await db.execute(
+        "INSERT INTO mirrors (user_id, token, bot_username, status, created_at) VALUES (?, ?, ?, 'active', ?)",
+        (user_id, token, username, datetime.now().isoformat())
+    )
+    await db.commit()
+    return cursor.lastrowid
 
 async def set_setting(key: str, value: str):
     await db.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value))
@@ -702,6 +754,7 @@ async def main_menu(user_id: int):
     kb.button(text=f"📸 Посмотреть фото ({photo_price:g} 💎)", callback_data="watch_photo")
     kb.button(text="🎁 Ежедневная награда", callback_data="daily_reward")
     kb.button(text="🛒 Магазин 💰", callback_data="shop_main")
+    kb.button(text="🔄 Зеркала", callback_data="mirror_menu")
     kb.button(text="🎟 Промокоды", callback_data="promo_menu")
     kb.button(text="🎮 Казино (Тест)", callback_data="casino_menu")
     kb.button(text="🏆 Таблица Лидеров", callback_data="leaderboard")
@@ -779,6 +832,7 @@ def admin_menu():
     kb.button(text="👤 Управление юзерами (💎/🚫)", callback_data="admin_manage_users")
     kb.button(text="🚫 Забаненные пользователи", callback_data="admin_banned_list")
     kb.button(text="👑 Список админов", callback_data="admin_list_admins")
+    kb.button(text="🔑 Токены для зеркал", callback_data="admin_tokens")
     kb.button(text="⚙️ Настройки экономики", callback_data="admin_economy")
     kb.button(text="📤 Экспорт пользователей (CSV)", callback_data="admin_export_users")
     kb.button(text="🎫 Активные промокоды", callback_data="admin_active_promos")
@@ -1023,6 +1077,308 @@ async def watch_photo(callback: CallbackQuery, bot: Bot):
         await db.commit()
     await callback.answer()
 
+@router.callback_query(F.data == "mirror_menu")
+async def mirror_menu(callback: CallbackQuery):
+    """Меню управления зеркалами"""
+    user_id = callback.from_user.id
+    mirrors = await get_user_mirrors(user_id)
+    mirror_count = await get_mirror_count(user_id)
+    
+    stats = await tokens_db.get_stats()
+    
+    kb = InlineKeyboardBuilder()
+    if stats['available'] > 0:
+        kb.button(text=f"➕ Создать зеркало (+20 💎)", callback_data="create_mirror")
+    else:
+        kb.button(text="⏳ Нет доступных токенов", callback_data="no_tokens")
+    kb.button(text="📋 Мои зеркала", callback_data="my_mirrors")
+    
+    if mirrors:
+        kb.button(text="🔄 Перезапустить зеркала", callback_data="restart_mirrors")
+    
+    kb.button(text="◀️ Назад в меню", callback_data="back_main")
+    kb.adjust(1)
+    
+    text = (
+        "🔄 <b>Управление зеркалами</b>\n\n"
+        f"📊 Всего зеркал: <b>{mirror_count}</b>\n"
+        f"🟢 Доступно токенов: <b>{stats['available']}</b>\n\n"
+        "💡 <b>Инструкция:</b>\n"
+        "1. Создайте бота в @BotFather\n"
+        "2. Скопируйте токен\n"
+        "3. Нажмите 'Создать зеркало'\n"
+        "4. Вставьте токен\n"
+        "5. Получите +20 💎!\n\n"
+        "⚠️ Бот-зеркало будет работать сразу после создания!"
+    )
+    
+    await callback.message.edit_text(text, reply_markup=kb.as_markup())
+
+@router.callback_query(F.data == "create_mirror")
+async def create_mirror_start(callback: CallbackQuery, state: FSMContext):
+    """Начало создания зеркала"""
+    user_id = callback.from_user.id
+    
+    # Проверяем, есть ли доступные токены
+    token_data = await tokens_db.get_available_token()
+    if not token_data:
+        return await callback.answer(
+            "❌ Нет доступных токенов! Администратор добавит токены позже.",
+            show_alert=True
+        )
+    
+    # Проверяем лимит (максимум 5 зеркал)
+    mirror_count = await get_mirror_count(user_id)
+    if mirror_count >= 5:
+        return await callback.answer(
+            "❌ Максимум 5 зеркал на пользователя!",
+            show_alert=True
+        )
+    
+    await callback.message.edit_text(
+        "🔑 <b>Создание зеркала</b>\n\n"
+        "1. Перейдите в @BotFather\n"
+        "2. Создайте нового бота командой /newbot\n"
+        "3. Скопируйте полученный токен\n"
+        "4. Вставьте токен сюда (отправьте текстом):\n\n"
+        "⚠️ Токен должен быть в формате:\n"
+        "<code>1234567890:ABCdefGHIjklMNOpqrsTUVwxyz</code>"
+    )
+    await state.set_state(MirrorStates.enter_token)
+
+@router.message(MirrorStates.enter_token)
+async def process_mirror_token(message: Message, state: FSMContext, bot: Bot):
+    """Обработка введенного токена"""
+    user_id = message.from_user.id
+    token = message.text.strip()
+    
+    # Валидация токена
+    if ':' not in token or not token.split(':')[0].isdigit():
+        return await message.answer(
+            "❌ Неверный формат токена!\n\n"
+            "Токен должен быть в формате:\n"
+            "<code>1234567890:ABCdefGHIjklMNOpqrsTUVwxyz</code>"
+        )
+    
+    await state.clear()
+    
+    # Проверяем, есть ли токен в базе
+    existing = await tokens_db.get_token_by_username(token)
+    if existing:
+        return await message.answer("❌ Этот токен уже используется!")
+    
+    # Проверяем токен через Telegram API
+    try:
+        test_bot = Bot(token=token)
+        me = await test_bot.get_me()
+        username = me.username
+        await test_bot.session.close()
+    except Exception as e:
+        return await message.answer(
+            f"❌ Не удалось подключиться к боту!\nОшибка: {str(e)[:100]}"
+        )
+    
+    # Проверяем лимит
+    mirror_count = await get_mirror_count(user_id)
+    if mirror_count >= 5:
+        return await message.answer("❌ Максимум 5 зеркал на пользователя!")
+    
+    # Сохраняем токен в базу токенов
+    await tokens_db.add_token(token, username, user_id)
+    
+    # Создаем зеркало
+    mirror_id = await create_mirror_record(user_id, token, username)
+    
+    # Помечаем токен как использованный
+    await tokens_db.use_token(token, user_id, mirror_id)
+    
+    # Запускаем бота-зеркало
+    success = await start_mirror_bot(token, username)
+    
+    if success:
+        await tokens_db.update_token_status(token, 'used', 1)
+        await db.execute(
+            "UPDATE mirrors SET status = 'active', activated_at = ? WHERE id = ?",
+            (datetime.now().isoformat(), mirror_id)
+        )
+        await db.commit()
+        
+        # Начисляем награду
+        await add_diamonds(user_id, 20.0)
+        
+        await message.answer(
+            f"✅ <b>Зеркало успешно создано!</b>\n\n"
+            f"🤖 Бот: @{username}\n"
+            f"💎 Награда: +20 💎\n\n"
+            f"📊 Всего зеркал: {mirror_count + 1}\n"
+            f"🔗 <code>https://t.me/{username}</code>",
+            reply_markup=InlineKeyboardBuilder()
+                .button(text="🔗 Перейти к боту", url=f"https://t.me/{username}")
+                .button(text="◀️ В меню зеркал", callback_data="mirror_menu")
+                .adjust(1)
+                .as_markup()
+        )
+        
+        await send_log(f"🔄 Пользователь создал зеркало @{username} (+20 💎)")
+    else:
+        await db.execute(
+            "UPDATE mirrors SET status = 'inactive' WHERE id = ?",
+            (mirror_id,)
+        )
+        await db.commit()
+        await tokens_db.update_token_status(token, 'banned', 0)
+        await message.answer(
+            "❌ Не удалось запустить бота-зеркало!\n"
+            "Обратитесь в поддержку: @zemelya_admin"
+        )
+
+@router.callback_query(F.data == "my_mirrors")
+async def my_mirrors(callback: CallbackQuery):
+    """Список зеркал пользователя"""
+    user_id = callback.from_user.id
+    mirrors = await get_user_mirrors(user_id)
+    
+    if not mirrors:
+        return await callback.answer("У вас нет зеркал!", show_alert=True)
+    
+    kb = InlineKeyboardBuilder()
+    text = "📋 <b>Ваши зеркала:</b>\n\n"
+    
+    for mirror_id, username, status, created_at, activated_at in mirrors:
+        status_emoji = {'pending': '⏳', 'active': '✅', 'inactive': '❌'}.get(status, '❓')
+        status_text = {'pending': 'Создается...', 'active': 'Работает', 'inactive': 'Неактивен'}.get(status, 'Неизвестно')
+        
+        created = datetime.fromisoformat(created_at).strftime("%d.%m %H:%M")
+        text += f"{status_emoji} @{username} — {status_text}\n"
+        text += f"   🕐 Создан: {created}\n\n"
+        
+        if status == 'active':
+            kb.button(text=f"🔗 @{username}", url=f"https://t.me/{username}")
+    
+    kb.button(text="🔄 Обновить", callback_data="my_mirrors")
+    kb.button(text="◀️ Назад", callback_data="mirror_menu")
+    kb.adjust(1)
+    
+    await callback.message.edit_text(text, reply_markup=kb.as_markup())
+
+@router.callback_query(F.data == "no_tokens")
+async def no_tokens(callback: CallbackQuery):
+    await callback.answer("⏳ Нет доступных токенов для создания зеркал!", show_alert=True)
+
+@router.callback_query(F.data == "admin_tokens")
+async def admin_tokens(callback: CallbackQuery):
+    """Админ-панель управления токенами"""
+    if callback.from_user.id not in ADMIN_IDS:
+        return await callback.answer("❌ Нет прав!", show_alert=True)
+    
+    stats = await tokens_db.get_stats()
+    
+    kb = InlineKeyboardBuilder()
+    kb.button(text="➕ Добавить токены", callback_data="admin_add_tokens")
+    kb.button(text="📊 Все токены", callback_data="admin_view_tokens")
+    kb.button(text="◀️ Назад в админку", callback_data="admin_enter")
+    kb.adjust(1)
+    
+    await callback.message.edit_text(
+        f"🔑 <b>Управление токенами</b>\n\n"
+        f"📊 Статистика:\n"
+        f"  • Всего: <b>{stats['total']}</b>\n"
+        f"  • Доступно: <b>{stats['available']}</b>\n"
+        f"  • Использовано: <b>{stats['used']}</b>\n"
+        f"  • Активно: <b>{stats['active']}</b>\n"
+        f"  • Забанено: <b>{stats['banned']}</b>",
+        reply_markup=kb.as_markup()
+    )
+
+@router.callback_query(F.data == "admin_add_tokens")
+async def admin_add_tokens(callback: CallbackQuery, state: FSMContext):
+    """Добавление новых токенов"""
+    if callback.from_user.id not in ADMIN_IDS:
+        return await callback.answer("❌ Нет прав!", show_alert=True)
+    
+    await callback.message.edit_text(
+        "🔑 <b>Добавление токенов</b>\n\n"
+        "Введите токены, каждый с новой строки:\n\n"
+        "Пример:\n"
+        "<code>1234567890:ABCdefGHIjklMNOpqrsTUVwxyz</code>\n"
+        "<code>1234567891:ABCdefGHIjklMNOpqrsTUVwxya</code>"
+    )
+    await state.set_state(AdminStates.add_token)
+
+@router.message(AdminStates.add_token)
+async def process_add_tokens(message: Message, state: FSMContext):
+    """Обработка добавления токенов"""
+    if message.from_user.id not in ADMIN_IDS:
+        return
+    
+    tokens = [t.strip() for t in message.text.split('\n') if t.strip()]
+    added = 0
+    errors = 0
+    
+    for token in tokens:
+        try:
+            # Проверяем токен
+            test_bot = Bot(token=token)
+            me = await test_bot.get_me()
+            username = me.username
+            await test_bot.session.close()
+            
+            # Сохраняем в базу токенов
+            if await tokens_db.add_token(token, username, message.from_user.id):
+                added += 1
+                await send_log(f"🔑 Добавлен токен @{username}")
+            else:
+                errors += 1
+        except Exception as e:
+            errors += 1
+            await send_log(f"❌ Ошибка добавления токена: {e}")
+    
+    await state.clear()
+    
+    await message.answer(
+        f"✅ <b>Токены добавлены!</b>\n\n"
+        f"➕ Добавлено: <b>{added}</b>\n"
+        f"❌ Ошибок: <b>{errors}</b>",
+        reply_markup=InlineKeyboardBuilder()
+            .button(text="◀️ Назад", callback_data="admin_tokens")
+            .as_markup()
+    )
+
+@router.callback_query(F.data == "admin_view_tokens")
+async def admin_view_tokens(callback: CallbackQuery):
+    """Просмотр всех токенов"""
+    if callback.from_user.id not in ADMIN_IDS:
+        return await callback.answer("❌ Нет прав!", show_alert=True)
+    
+    tokens = await tokens_db.get_all_tokens()
+    
+    if not tokens:
+        return await callback.answer("Нет токенов в базе!", show_alert=True)
+    
+    kb = InlineKeyboardBuilder()
+    text = "📋 <b>Все токены:</b>\n\n"
+    
+    for token_id, token, username, status, user_id, is_active in tokens[:20]:
+        status_emoji = {
+            'available': '🟢',
+            'used': '🔵',
+            'banned': '🔴'
+        }.get(status, '⚪')
+        
+        active_text = "✅" if is_active else "❌"
+        text += f"{status_emoji} @{username} — {status} {active_text}\n"
+        if user_id:
+            text += f"   👤 ID: {user_id}\n"
+        text += f"   🆔 {token[:20]}...\n\n"
+    
+    if len(tokens) > 20:
+        text += f"\n... и еще {len(tokens) - 20} токенов"
+    
+    kb.button(text="◀️ Назад", callback_data="admin_tokens")
+    kb.adjust(1)
+    
+    await callback.message.edit_text(text, reply_markup=kb.as_markup())
+
 @router.callback_query(F.data == "promo_menu")
 async def promo_menu(callback: CallbackQuery):
     user_id = callback.from_user.id
@@ -1042,6 +1398,103 @@ async def promo_menu(callback: CallbackQuery):
 async def promo_activate(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text("📥 Введите промокод:")
     await state.set_state(PromoStates.activate_code)
+
+@router.callback_query(F.data == "create_mirror")
+async def create_mirror_start(callback: CallbackQuery, state: FSMContext):
+    """Начало создания зеркала"""
+    user_id = callback.from_user.id
+    
+    # Проверяем лимит
+    mirror_count = await get_mirror_count(user_id)
+    if mirror_count >= 5:
+        return await callback.answer("❌ Максимум 5 зеркал!", show_alert=True)
+    
+    # Проверяем доступные токены в БД
+    token_data = await tokens_db.get_available_token()
+    if not token_data:
+        return await callback.answer(
+            "❌ Нет доступных токенов! Администратор добавит токены позже.",
+            show_alert=True
+        )
+    
+    await callback.message.edit_text(
+        "🔑 <b>Создание зеркала</b>\n\n"
+        "1. Перейдите в @BotFather\n"
+        "2. Создайте нового бота /newbot\n"
+        "3. Скопируйте токен\n"
+        "4. Вставьте токен сюда:\n\n"
+        "⚠️ Токен: <code>1234567890:ABCdefGHIjklMNOpqrsTUVwxyz</code>"
+    )
+    await state.set_state(MirrorStates.enter_token)
+
+@router.message(MirrorStates.enter_token)
+async def process_mirror_token(message: Message, state: FSMContext, bot: Bot):
+    """Обработка введенного токена"""
+    user_id = message.from_user.id
+    token = message.text.strip()
+    
+    if ':' not in token:
+        return await message.answer("❌ Неверный формат токена! Попробуйте снова.")
+    
+    await state.clear()
+    
+    # Проверяем токен
+    try:
+        test_bot = Bot(token=token)
+        me = await test_bot.get_me()
+        username = me.username
+        await test_bot.session.close()
+    except Exception as e:
+        return await message.answer(f"❌ Ошибка: {str(e)[:100]}")
+    
+    # Проверяем лимит
+    mirror_count = await get_mirror_count(user_id)
+    if mirror_count >= 5:
+        return await message.answer("❌ Максимум 5 зеркал!")
+    
+    # Сохраняем токен в БД
+    await tokens_db.add_token(token, username, user_id)
+    await tokens_db.use_token(token, user_id)
+    
+    # Создаем зеркало
+    cursor = await db.execute(
+        "INSERT INTO mirrors (user_id, token, bot_username, status, created_at) VALUES (?, ?, ?, 'active', ?)",
+        (user_id, token, username, datetime.now().isoformat())
+    )
+    await db.commit()
+    mirror_id = cursor.lastrowid
+    
+    # Запускаем бота-зеркало
+    success = await start_mirror_bot(token, username)
+    
+    if success:
+        await tokens_db.update_token_status(token, 'used', 1)
+        await db.execute(
+            "UPDATE mirrors SET status = 'active', activated_at = ? WHERE id = ?",
+            (datetime.now().isoformat(), mirror_id)
+        )
+        await db.commit()
+        
+        # Начисляем награду
+        await add_diamonds(user_id, 20.0)
+        
+        await message.answer(
+            f"✅ <b>Зеркало создано!</b>\n\n"
+            f"🤖 @{username}\n"
+            f"💎 +20 💎\n\n"
+            f"🔗 <code>https://t.me/{username}</code>",
+            reply_markup=InlineKeyboardBuilder()
+                .button(text="🔗 Перейти", url=f"https://t.me/{username}")
+                .button(text="◀️ Назад", callback_data="mirror_menu")
+                .adjust(1)
+                .as_markup()
+        )
+        
+        await send_log(f"🔄 Пользователь создал зеркало @{username} (+20 💎)")
+    else:
+        await db.execute("UPDATE mirrors SET status = 'inactive' WHERE id = ?", (mirror_id,))
+        await db.commit()
+        await message.answer("❌ Ошибка запуска зеркала!")
 
 @router.message(PromoStates.activate_code)
 async def process_promo_activate(message: Message, state: FSMContext):
@@ -2551,6 +3004,89 @@ async def main():
         
     except Exception as e:
         await send_log(f"❌ Ошибка бота оплаты: {e}")
+
+    # ========================= ЗАПУСК ЗЕРКАЛ =========================
+
+async def start_mirror_bot(token: str, username: str):
+    """Запускает бота-зеркало"""
+    try:
+        # Проверяем, не запущен ли уже
+        if token in MIRROR_BOTS:
+            try:
+                await MIRROR_BOTS[token].session.close()
+            except:
+                pass
+        
+        mirror_bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+        await mirror_bot.delete_webhook(drop_pending_updates=True)
+        
+        dp_mirror = Dispatcher()
+        dp_mirror.include_router(create_router())
+        
+        # Запускаем в фоне
+        asyncio.create_task(
+            dp_mirror.start_polling(mirror_bot, allowed_updates=dp_mirror.resolve_used_update_types())
+        )
+        
+        MIRROR_BOTS[token] = mirror_bot
+        return True
+    except Exception as e:
+        await send_log(f"❌ Ошибка запуска зеркала @{username}: {e}")
+        return False
+
+async def activate_pending_mirrors():
+    """Активирует все ожидающие зеркала из БД"""
+    await send_log("🔄 Активация зеркал...")
+    
+    async with db.execute(
+        "SELECT id, token, bot_username FROM mirrors WHERE status = 'pending'"
+    ) as cur:
+        mirrors = await cur.fetchall()
+    
+    activated = 0
+    for mirror_id, token, username in mirrors:
+        success = await start_mirror_bot(token, username)
+        if success:
+            await db.execute(
+                "UPDATE mirrors SET status = 'active', activated_at = ? WHERE id = ?",
+                (datetime.now().isoformat(), mirror_id)
+            )
+            await db.commit()
+            activated += 1
+            await send_log(f"✅ Зеркало @{username} активировано")
+        else:
+            await db.execute(
+                "UPDATE mirrors SET status = 'inactive' WHERE id = ?",
+                (mirror_id,)
+            )
+            await db.commit()
+            await send_log(f"❌ Зеркало @{username} не запустилось")
+    
+    return activated
+
+# В main(), после запуска всех ботов, добавьте:
+async def main():
+    global db, MAIN_BOTS, ACTIVE_BOTS, PAYMENT_BOT_USERNAME, MIRROR_BOTS
+    
+    # ... существующий код инициализации ...
+    
+    # ЗАПУСК ЗЕРКАЛ
+    await send_log("🚀 Запуск зеркал...")
+    
+    # Запускаем все активные зеркала
+    async with db.execute(
+        "SELECT id, token, bot_username FROM mirrors WHERE status = 'active'"
+    ) as cur:
+        mirrors = await cur.fetchall()
+    
+    for mirror_id, token, username in mirrors:
+        await start_mirror_bot(token, username)
+        await send_log(f"🔄 Зеркало @{username} запущено")
+    
+    # Активируем ожидающие зеркала
+    activated = await activate_pending_mirrors()
+    
+    # ... остальной код ...
     
     # ЗАПУСК HEARTBEAT
     bot_tasks.append(asyncio.create_task(heartbeat_checker()))
