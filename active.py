@@ -189,7 +189,7 @@ async def check_bots_handler(callback: CallbackQuery):
         await callback.message.edit_text(
             "🚫 <b>Анти-снос бот временно отключен</b>\n\n"
             "Будет включен когда когда будет нужно\n"
-            "Следите за новостями в нашем тгк: https://t.me/+JypFAG4wqgk0ZTEy",
+            "Следите за новостями в нашем тгк: https://t.me/+3pDFo-jEEpk5ZWYy",
             parse_mode="HTML"
         )
         return
