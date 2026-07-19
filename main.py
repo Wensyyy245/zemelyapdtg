@@ -119,8 +119,7 @@ MAIN_BOT_TOKENS = [
 ]
 PAYMENT_BOT_TOKEN = "8947363174:AAG2Ly6FWUlcjKyZoSHJP04SCxQECtSV0CQ"
 CHANNELS = [
-    (-1003475196063, "Наш канал", "https://t.me/+3pDFo-jEEpk5ZWYy"),
-    ("@Klubnichkin812", "Наш резерв", "https://t.me/Klubnichkin812"),
+    (@klubnichka_new, "Наш канал", "https://t.me/klubnichka_new"),
 ]
 LOG_GROUP_ID = -5417151890  # <--- СЮДА ВСТАВЬТЕ ID ВАШЕЙ ГРУППЫ
 ADMIN_IDS = [8794011165]
